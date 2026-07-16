@@ -1,0 +1,37 @@
+Matched functions: 1
+================================================================================
+Function: FUN_100bf6840
+Entry: 100bf6840
+Targets: 1015ab660, 1015ab678, 1015ab690, 1015ab6a8, 1015ab6c0, 1015ab6d8, 1015ab6f0
+
+undefined4 * FUN_100bf6840(int param_1)
+
+{
+  undefined4 *puVar1;
+  
+  if (DAT_1015ab660 == param_1) {
+    return &DAT_1015ab660;
+  }
+  if (DAT_1015ab678 == param_1) {
+    return &DAT_1015ab678;
+  }
+  if (DAT_1015ab690 == param_1) {
+    return &DAT_1015ab690;
+  }
+  if (DAT_1015ab6a8 == param_1) {
+    return &DAT_1015ab6a8;
+  }
+  if (DAT_1015ab6c0 == param_1) {
+    return &DAT_1015ab6c0;
+  }
+  if (DAT_1015ab6d8 == param_1) {
+    return &DAT_1015ab6d8;
+  }
+  puVar1 = (undefined4 *)0x0;
+  if (DAT_1015ab6f0 == param_1) {
+    puVar1 = &DAT_1015ab6f0;
+  }
+  return puVar1;
+}
+
+

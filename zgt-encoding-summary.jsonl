@@ -1,0 +1,446 @@
+{"subscribed": "/ZoneGroupTopology/Event", "sid_length": 43, "sid_sha256": "ca7f613f5860"}
+{
+  "event_path": "/ZoneGroupTopology/Event",
+  "properties": [
+    {
+      "name": "ZoneGroupState",
+      "summary": {
+        "kind": "xml",
+        "nodes": [
+          {
+            "attributes": [],
+            "children": 2,
+            "path": "ZoneGroupState"
+          },
+          {
+            "attributes": [],
+            "children": 4,
+            "path": "ZoneGroupState/ZoneGroups[0]"
+          },
+          {
+            "attributes": [
+              "Coordinator",
+              "ID"
+            ],
+            "children": 2,
+            "path": "ZoneGroupState/ZoneGroups[0]/ZoneGroup[0]"
+          },
+          {
+            "attributes": [
+              "AirPlayEnabled",
+              "BehindWifiExtender",
+              "BootSeq",
+              "ChannelFreq",
+              "Configuration",
+              "ConnectionType",
+              "EthLink",
+              "HHSSLPort",
+              "HdmiCecAvailable",
+              "HeadphoneSwapActive",
+              "Icon",
+              "IdleState",
+              "LegacyCompatibleVersion",
+              "Location",
+              "MicEnabled",
+              "MinCompatibleVersion",
+              "MoreInfo",
+              "Orientation",
+              "RoomCalibrationState",
+              "SSLPort",
+              "SWGen",
+              "SecureRegState",
+              "SoftwareVersion",
+              "TVConfigurationError",
+              "UUID",
+              "VoiceConfigState",
+              "WifiEnabled",
+              "WirelessMode",
+              "ZoneName"
+            ],
+            "children": 0,
+            "path": "ZoneGroupState/ZoneGroups[0]/ZoneGroup[0]/ZoneGroupMember[0]"
+          },
+          {
+            "attributes": [
+              "AirPlayEnabled",
+              "BehindWifiExtender",
+              "BootSeq",
+              "ChannelFreq",
+              "Configuration",
+              "ConnectionType",
+              "EthLink",
+              "HHSSLPort",
+              "HdmiCecAvailable",
+              "HeadphoneSwapActive",
+              "Icon",
+              "IdleState",
+              "LegacyCompatibleVersion",
+              "Location",
+              "MicEnabled",
+              "MinCompatibleVersion",
+              "MoreInfo",
+              "Orientation",
+              "RoomCalibrationState",
+              "SSLPort",
+              "SWGen",
+              "SecureRegState",
+              "SoftwareVersion",
+              "TVConfigurationError",
+              "UUID",
+              "VoiceConfigState",
+              "WifiEnabled",
+              "WirelessMode",
+              "ZoneName"
+            ],
+            "children": 0,
+            "path": "ZoneGroupState/ZoneGroups[0]/ZoneGroup[0]/ZoneGroupMember[1]"
+          },
+          {
+            "attributes": [
+              "Coordinator",
+              "ID"
+            ],
+            "children": 1,
+            "path": "ZoneGroupState/ZoneGroups[0]/ZoneGroup[1]"
+          },
+          {
+            "attributes": [
+              "AirPlayEnabled",
+              "BehindWifiExtender",
+              "BootSeq",
+              "ChannelFreq",
+              "Configuration",
+              "ConnectionType",
+              "EthLink",
+              "HHSSLPort",
+              "HdmiCecAvailable",
+              "HeadphoneSwapActive",
+              "Icon",
+              "IdleState",
+              "LegacyCompatibleVersion",
+              "Location",
+              "MicEnabled",
+              "MinCompatibleVersion",
+              "MoreInfo",
+              "Orientation",
+              "RoomCalibrationState",
+              "SSLPort",
+              "SWGen",
+              "SecureRegState",
+              "SoftwareVersion",
+              "TVConfigurationError",
+              "UUID",
+              "VoiceConfigState",
+              "WifiEnabled",
+              "WirelessMode",
+              "ZoneName"
+            ],
+            "children": 0,
+            "path": "ZoneGroupState/ZoneGroups[0]/ZoneGroup[1]/ZoneGroupMember[0]"
+          },
+          {
+            "attributes": [
+              "Coordinator",
+              "ID"
+            ],
+            "children": 1,
+            "path": "ZoneGroupState/ZoneGroups[0]/ZoneGroup[2]"
+          },
+          {
+            "attributes": [
+              "AirPlayEnabled",
+              "BehindWifiExtender",
+              "BootSeq",
+              "ChannelFreq",
+              "Configuration",
+              "ConnectionType",
+              "EthLink",
+              "HHSSLPort",
+              "HdmiCecAvailable",
+              "HeadphoneSwapActive",
+              "Icon",
+              "IdleState",
+              "LegacyCompatibleVersion",
+              "Location",
+              "MicEnabled",
+              "MinCompatibleVersion",
+              "MoreInfo",
+              "Orientation",
+              "RoomCalibrationState",
+              "SSLPort",
+              "SWGen",
+              "SecureRegState",
+              "SoftwareVersion",
+              "TVConfigurationError",
+              "UUID",
+              "VoiceConfigState",
+              "WifiEnabled",
+              "WirelessMode",
+              "ZoneName"
+            ],
+            "children": 0,
+            "path": "ZoneGroupState/ZoneGroups[0]/ZoneGroup[2]/ZoneGroupMember[0]"
+          },
+          {
+            "attributes": [
+              "Coordinator",
+              "ID"
+            ],
+            "children": 1,
+            "path": "ZoneGroupState/ZoneGroups[0]/ZoneGroup[3]"
+          },
+          {
+            "attributes": [
+              "AirPlayEnabled",
+              "BehindWifiExtender",
+              "BootSeq",
+              "ChannelFreq",
+              "Configuration",
+              "ConnectionType",
+              "EthLink",
+              "HHSSLPort",
+              "HdmiCecAvailable",
+              "HeadphoneSwapActive",
+              "Icon",
+              "IdleState",
+              "LegacyCompatibleVersion",
+              "Location",
+              "MicEnabled",
+              "MinCompatibleVersion",
+              "MoreInfo",
+              "Orientation",
+              "RoomCalibrationState",
+              "SSLPort",
+              "SWGen",
+              "SecureRegState",
+              "SoftwareVersion",
+              "TVConfigurationError",
+              "UUID",
+              "VoiceConfigState",
+              "WifiEnabled",
+              "WirelessMode",
+              "ZoneName"
+            ],
+            "children": 0,
+            "path": "ZoneGroupState/ZoneGroups[0]/ZoneGroup[3]/ZoneGroupMember[0]"
+          },
+          {
+            "attributes": [],
+            "children": 0,
+            "path": "ZoneGroupState/VanishedDevices[1]"
+          }
+        ]
+      }
+    },
+    {
+      "name": "ThirdPartyMediaServersX",
+      "summary": {
+        "kind": "opaque",
+        "length": 13210,
+        "prefix_codepoints": [
+          50,
+          58,
+          66,
+          97,
+          81,
+          119,
+          105,
+          100,
+          43,
+          86,
+          55,
+          100,
+          68,
+          117,
+          112,
+          115
+        ],
+        "printable_fraction": 1.0,
+        "sha256": "11982b2b2ec1"
+      }
+    },
+    {
+      "name": "AvailableSoftwareUpdate",
+      "summary": {
+        "kind": "xml",
+        "nodes": [
+          {
+            "attributes": [
+              "DownloadSize",
+              "LatestSwgen",
+              "ManifestRevision",
+              "ManifestURL",
+              "Swgen",
+              "Type",
+              "UpdateURL",
+              "Version"
+            ],
+            "children": 0,
+            "path": "UpdateItem"
+          }
+        ]
+      }
+    },
+    {
+      "name": "AlarmRunSequence",
+      "summary": {
+        "kind": "opaque",
+        "length": 31,
+        "prefix_codepoints": [
+          82,
+          73,
+          78,
+          67,
+          79,
+          78,
+          95,
+          53,
+          67,
+          65,
+          65,
+          70,
+          68,
+          48,
+          56,
+          69
+        ],
+        "printable_fraction": 1.0,
+        "sha256": "25b59737903b"
+      }
+    },
+    {
+      "name": "ZoneGroupName",
+      "summary": {
+        "kind": "text",
+        "value": "Kitchen + 1"
+      }
+    },
+    {
+      "name": "ZoneGroupID",
+      "summary": {
+        "kind": "opaque",
+        "length": 28,
+        "prefix_codepoints": [
+          82,
+          73,
+          78,
+          67,
+          79,
+          78,
+          95,
+          53,
+          67,
+          65,
+          65,
+          70,
+          68,
+          48,
+          56,
+          69
+        ],
+        "printable_fraction": 1.0,
+        "sha256": "033c61c7f06e"
+      }
+    },
+    {
+      "name": "ZonePlayerUUIDsInGroup",
+      "summary": {
+        "kind": "opaque",
+        "length": 49,
+        "prefix_codepoints": [
+          82,
+          73,
+          78,
+          67,
+          79,
+          78,
+          95,
+          53,
+          67,
+          65,
+          65,
+          70,
+          68,
+          48,
+          56,
+          69
+        ],
+        "printable_fraction": 1.0,
+        "sha256": "4bf899140d90"
+      }
+    },
+    {
+      "name": "MuseHouseholdId",
+      "summary": {
+        "kind": "opaque",
+        "length": 53,
+        "prefix_codepoints": [
+          83,
+          111,
+          110,
+          111,
+          115,
+          95,
+          116,
+          48,
+          120,
+          80,
+          122,
+          98,
+          50,
+          65,
+          82,
+          116
+        ],
+        "printable_fraction": 1.0,
+        "sha256": "5b58aae3db49"
+      }
+    },
+    {
+      "name": "AreasUpdateID",
+      "summary": {
+        "kind": "opaque",
+        "length": 44,
+        "prefix_codepoints": [
+          52,
+          55,
+          68,
+          69,
+          81,
+          112,
+          106,
+          56,
+          72,
+          66,
+          83,
+          97,
+          43,
+          47,
+          84,
+          73
+        ],
+        "printable_fraction": 1.0,
+        "sha256": "5c4074cf6deb"
+      }
+    },
+    {
+      "name": "SourceAreasUpdateID",
+      "summary": {
+        "kind": "opaque",
+        "length": 0,
+        "prefix_codepoints": [],
+        "printable_fraction": 0.0,
+        "sha256": "e3b0c44298fc"
+      }
+    },
+    {
+      "name": "NetsettingsUpdateID",
+      "summary": {
+        "kind": "text",
+        "value": "135"
+      }
+    }
+  ],
+  "sid_length": 43,
+  "sid_sha256": "ca7f613f5860"
+}
