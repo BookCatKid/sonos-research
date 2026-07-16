@@ -24,16 +24,7 @@ from typing import Any
 SSDP_ADDRESS = ("239.255.255.250", 1900)
 ZGT_EVENT_PATH = "/ZoneGroupTopology/Event"
 SALT = bytes.fromhex("1a01a731c96e9ebde8475182b274b70e")
-SENSITIVE_WORDS = (
-    "auth", "credential", "key", "password", "secret", "session", "token",
-    "username", "email", "account", "nickname", "serial", "udn", "id",
-)
 
-
-def short_hash(value: bytes | str) -> str:
-    if isinstance(value, str):
-        value = value.encode("utf-8", errors="replace")
-    return hashlib.sha256(value).hexdigest()[:12]
 
 
 def parse_headers(packet: bytes) -> dict[str, str]:
@@ -207,12 +198,8 @@ def scalar_summary(value: Any, key: str = "") -> dict[str, Any]:
     if value is None or isinstance(value, (bool, int, float)):
         return {"type": type(value).__name__, "value": value}
     if isinstance(value, bytes):
-        return {"type": "bytes", "length": len(value), "sha256": short_hash(value)}
-    text = str(value)
-    result: dict[str, Any] = {"type": "string", "length": len(text), "sha256": short_hash(text)}
-    if not any(word in key.lower() for word in SENSITIVE_WORDS) and re.fullmatch(r"[A-Za-z][A-Za-z0-9_.:-]{0,39}", text):
-        result["safe_value"] = text
-    return result
+        return {"type": "bytes", "length": len(value), "value": value.hex()}
+    return {"type": "string", "length": len(str(value)), "value": str(value)}
 
 
 def structure(value: Any, path: str = "$") -> list[dict[str, Any]]:
@@ -261,29 +248,31 @@ def account_report(payload: bytes, catalog: dict[str, str]) -> dict[str, Any]:
         service_id = str(encoded_type // 256) if encoded_type is not None else "special/local"
         schema_revision = encoded_type % 256 if encoded_type is not None else None
         counts[service_id] = counts.get(service_id, 0) + 1
-        credential_fields = [
+        credential_fields = sorted(
             key for key in attrs
             if re.match(r"^(Token|Key|Username)\d+$", key) and bool(attrs[key])
-        ]
+        )
+        all_attrs = {k: v for k, v in attrs.items() if k != "UDN"}
         instances.append(
             {
                 "instance_index": instance_index,
                 "service_id": service_id,
                 "service_name": catalog.get(service_id, "unmapped"),
+                "udn": attrs.get("UDN", ""),
                 "udn_schema_revision": schema_revision,
                 "account_slots_declared": int(attrs.get("NumAccounts", "0") or 0),
                 "serial_indexes": sorted(
                     int(value) for key, value in attrs.items()
                     if re.match(r"^SerialNum\d+$", key) and value.isdigit()
                 ),
-                "credential_fields_present": sorted(credential_fields),
-                "credential_lengths": {
-                    key: len(attrs[key]) for key in credential_fields
+                "credential_fields": credential_fields,
+                "credential_values": {
+                    key: attrs[key] for key in credential_fields
                 },
-                "metadata_fields_present": sorted(
-                    key for key, value in attrs.items()
-                    if value and key not in credential_fields and key != "UDN"
-                ),
+                "other_attributes": {
+                    key: value for key, value in attrs.items()
+                    if key not in credential_fields and key != "UDN" and not re.match(r"^SerialNum\d+$", key)
+                },
             }
         )
     return {
@@ -318,8 +307,8 @@ def main() -> None:
         catalog = list_available_services(host)
         report = {
             "discovery": {
-                "player_ip_redacted": True,
-                "household_id_length": len(household),
+                "player_ip": host,
+                "household_id": household,
             },
             "envelope": {
                 "version": 2,
