@@ -130,6 +130,115 @@ Both tools are read-only toward the Sonos system: they use SSDP discovery,
 `ListAvailableServices`, and an ephemeral UPnP event subscription. They do not
 invoke any account mutation or playback controls.
 
+## Direct SMAPI browsing
+
+The account tuple is sufficient to reproduce the desktop app's service browser.
+The implementation is in `smapi_browser.py`; it has been verified while the Sonos
+desktop process was not running.
+
+The controller first obtains the value of `R_TrialZPSerial` with the local
+`SystemProperties/GetString` action. That becomes the SMAPI `deviceId`. It then
+sends HTTPS SOAP 1.1 requests to the selected catalog descriptor's `SecureUri`:
+
+```text
+SOAP Header
+  credentials
+    zonePlayerId    = selected player UDN when capability bit 18 is set
+    deviceId       = R_TrialZPSerial
+    deviceProvider = Sonos
+    loginToken     = token/key/householdId when required by policy/capabilities
+    sessionId      = cached getSessionId result for DeviceLink services
+  context
+    timeZone       = local zone when capability bit 16 is set
+
+HTTP Headers
+  SOAPAction: "http://www.sonos.com/Services/1.1#getMetadata"
+  Accept-Language: en-US
+  X-Sonos-Controller-ID: controller UUID
+  Authorization: Bearer <token> when capability bit 3 is set
+
+SOAP Body
+  getMetadata(id, index, count [, recursive])
+  getMediaMetadata(id)
+  search(id, term, index, count)
+```
+
+Capability bit 3 is not just an additional header. When it is set, the official
+client omits `token` and `key` from the SOAP `loginToken` and moves the token to
+the HTTP Bearer header; `householdId` remains in the SOAP credentials. Capability
+bit 16 controls whether the context header is attached, and bit 18 controls the
+`zonePlayerId` field. These branches explain why one fixed credential envelope
+does not work across providers.
+
+For a DeviceLink account, the desktop app first calls `getSessionId` with base
+device credentials and the stored username/password body fields. Capability-bit-3
+services also receive the stored token as HTTP Bearer auth on that call. The
+returned session is cached by service ID and username and then sent as the SOAP
+`credentials.sessionId` on browse/search operations. An invalid-session response
+evicts it and repeats `getSessionId` once.
+
+`getMetadata` returns paged `mediaCollection` and `mediaMetadata` children.
+Collections are navigated by passing their returned `id` into another
+`getMetadata` call. A media item's ID can be passed to `getMediaMetadata` for its
+nested program/track/stream details. Providers are allowed to report that
+`getMediaMetadata` is unsupported; the item record from the collection remains
+valid in that case.
+
+Search category IDs are provider-defined. The desktop app follows the service
+descriptor's JSON manifest to its XML presentation map, selects the
+`PresentationMap type="Search"` groups, and maps each UI category `id` to its
+`mappedId`. The mapped ID is sent as the SOAP `search.id`; the request also sends
+the term, index, and count. Search totals and pages are capped at 1,000 by the
+desktop implementation. `--search-categories` and `--search` reproduce this path.
+
+### Expiration and transient replacement
+
+The active desktop path has two capability-dependent branches. With capability
+bit 3 clear, a `TokenRefreshRequired` SOAP fault can carry a nested
+`refreshAuthTokenResult`; the controller takes its `authToken` and `privateKey`
+directly from that failed browse. With bit 3 set, the controller calls
+`refreshAuthToken`, placing the old token/key back in the SOAP `loginToken` even
+though normal requests route the token as Bearer authorization.
+
+The decisive virtual-call trace is `FUN_100e18630` through the household-adapter
+slot at `+0x30` to `FUN_100cbe6c0`. That implementation calls
+`FUN_100e1d9d0` to replace the pair in the desktop process's account object and
+returns success. It does **not** invoke the separately present
+`SystemProperties/RefreshAccountCredentialsX` SOAP wrapper. Direct attempts to
+use that player action returned UPnP 402 and were based on the wrong call target.
+
+The independent browser now mirrors this behavior: `--refresh-credentials`
+updates only its in-memory account snapshot, retries once, and never changes the
+speaker's stored account record. Without the option it reports expiration
+without accepting or requesting a replacement.
+
+Some account records contain the literal token `needs_reauth`. That is an account
+state, not an alternate authentication mechanism, and the provider cannot refresh
+it. Reauthorization is required before either the official app or this browser
+can access that account.
+
+### Current live verification
+
+With the desktop app closed, the independent implementation has verified:
+
+- both configured Amazon Music accounts after embedded transient refresh;
+- SiriusXM and Audible after embedded transient refresh;
+- anonymous root browsing against NRK Radio, Sveriges Radio, myTuner Radio, CBC
+  Radio & Music;
+- live AppLink browsing against Radio Paradise and JazzGroove.org;
+- `getMediaMetadata` returning current nested CBC program data;
+- exact per-account selection when a service has multiple accounts;
+- the bit-3 `refreshAuthToken` construction used by Sonos Radio.
+
+The current Pandora records return `AuthTokenExpired` without replacement data,
+and the Apple record returns `InvalidToken`; the desktop state machine cannot
+derive a replacement from those responses. Sonos Radio refreshes successfully
+but its root `getMetadataResponse` is currently `xsi:nil` (and omits the `xsi`
+namespace declaration), which the browser tolerates as an empty result.
+
+Run `python3 smapi_browser.py --probe-all` for a fresh per-account result. It does
+not print token/key values.
+
 ## Home Assistant integration direction
 
 For an HA-side account inventory or diagnostic, subscribe to

@@ -37,7 +37,7 @@ def parse_headers(packet: bytes) -> dict[str, str]:
     return headers
 
 
-def discover(timeout: float = 3.0) -> tuple[str, str]:
+def discover(timeout: float = 3.0, *, requested_host: str | None = None) -> tuple[str, str]:
     request = (
         "M-SEARCH * HTTP/1.1\r\n"
         "HOST: 239.255.255.250:1900\r\n"
@@ -58,9 +58,12 @@ def discover(timeout: float = 3.0) -> tuple[str, str]:
             household = headers.get("x-rincon-household", "")
             location = headers.get("location", "")
             host = urllib.parse.urlparse(location).hostname or address[0]
+            if requested_host and host != requested_host and address[0] != requested_host:
+                continue
             if household and host:
                 return host, household
-    raise RuntimeError("No Sonos SSDP response supplied X-RINCON-HOUSEHOLD")
+    suffix = f" for {requested_host}" if requested_host else ""
+    raise RuntimeError(f"No Sonos SSDP response supplied X-RINCON-HOUSEHOLD{suffix}")
 
 
 def local_ip_for(host: str) -> str:
