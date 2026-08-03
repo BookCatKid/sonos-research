@@ -8,6 +8,14 @@ login.
 /usr/bin/python3 sonos_accounts_gui.py
 ```
 
+On macOS this command automatically restarts with Homebrew Python because
+Apple's bundled Tk 8.5.9 renders blank windows on current dark-mode systems.
+Install the supported GUI runtime once with:
+
+```sh
+brew install python-tk@3.14
+```
+
 Use **Run all** to discover players, fetch the service catalog, subscribe to the
 household event, and decode its configured account instances. The GUI redacts
 credentials until **Reveal credential values locally** is enabled.
@@ -18,9 +26,7 @@ content endpoint, while ordinary services use SMAPI. Double-clicking an item
 returned by a modern home page switches to the desktop's encoded SMAPI child
 request. The tab shows the transport used for every page.
 
-The currently selected pyenv Python on this Mac lacks `_tkinter`; use the system
-Python command above for the GUI. The command-line decoder works with either
-interpreter.
+The command-line decoder works with either interpreter.
 
 For a non-GUI report:
 

@@ -16,14 +16,17 @@ import hashlib
 import html
 import http.client
 import json
+import os
 import queue
 import re
 import shutil
 import socket
 import subprocess
+import sys
 import threading
 import time
 import traceback
+import tkinter
 import urllib.parse
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass
@@ -1583,6 +1586,26 @@ class SonosExplorerApp:
 
 
 def main() -> None:
+    # Apple's system Python is linked to Tk 8.5.9. On current macOS dark mode
+    # that runtime creates windows but fails to draw even basic label/button
+    # text. Transparently restart under the Homebrew Python when it has a
+    # supported Tk, so the documented /usr/bin/python3 command cannot produce
+    # a deceptive blank window.
+    if sys.platform == "darwin" and tkinter.TkVersion < 8.6:
+        candidate = Path("/opt/homebrew/bin/python3")
+        if candidate.exists() and Path(sys.executable).resolve() != candidate.resolve():
+            check = subprocess.run(
+                [str(candidate), "-c", "import tkinter; assert tkinter.TkVersion >= 8.6"],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                check=False,
+            )
+            if check.returncode == 0:
+                os.execv(str(candidate), [str(candidate), *sys.argv])
+        raise SystemExit(
+            "This Mac's system Tk 8.5 cannot render the GUI. Install the current runtime with "
+            "`brew install python-tk@3.14`, then run this command again."
+        )
     root = Tk()
     SonosExplorerApp(root)
     root.mainloop()
