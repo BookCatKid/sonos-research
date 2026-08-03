@@ -20,6 +20,7 @@ from smapi_browser import (
     content_browse,
     content_browse_headers,
     content_page_items,
+    content_page_sections,
     desktop_content_object_id,
     descendants,
     element_value,
@@ -180,6 +181,53 @@ class ContentTransportTests(unittest.TestCase):
         self.assertEqual(rows[0]["section"], "Library")
         self.assertEqual(rows[0]["id"], "libraryfolder:f.2")
         self.assertEqual(rows[0]["source_transport"], "content")
+
+    def test_content_root_exposes_sections_before_embedded_items(self) -> None:
+        sections = content_page_sections(
+            {
+                "views": [
+                    {
+                        "id": {"objectId": "view:library"},
+                        "total": 1,
+                        "content": {"container": {"name": "Library"}},
+                        "items": [
+                            {
+                                "id": {"objectId": "libraryfolder:f.2"},
+                                "content": {
+                                    "container": {
+                                        "name": "Albums",
+                                        "type": "container",
+                                        "imageUrl": "https://example.invalid/art.png",
+                                    }
+                                },
+                            }
+                        ],
+                    }
+                ]
+            }
+        )
+        self.assertEqual(len(sections), 1)
+        self.assertEqual(sections[0]["title"], "Library")
+        self.assertEqual(sections[0]["source_transport"], "content-section")
+        self.assertEqual(sections[0]["_embedded_items"][0]["title"], "Albums")
+
+    def test_content_track_is_not_presented_as_drillable_collection(self) -> None:
+        rows = content_page_items(
+            {
+                "views": [
+                    {
+                        "content": {"container": {"name": "Episodes"}},
+                        "items": [
+                            {
+                                "id": {"objectId": "episode:1"},
+                                "content": {"track": {"name": "Episode One", "type": "track"}},
+                            }
+                        ],
+                    }
+                ]
+            }
+        )
+        self.assertEqual(rows[0]["kind"], "mediaMetadata")
 
     def test_host_identity_prefers_configured_machine_identifier(self) -> None:
         with patch.dict("os.environ", {"SONOS_HOST_DEVICE_ID": "machine-id"}):

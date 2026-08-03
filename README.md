@@ -13,7 +13,7 @@ Apple's bundled Tk 8.5.9 renders blank windows on current dark-mode systems.
 Install the supported GUI runtime once with:
 
 ```sh
-brew install python-tk@3.14
+brew install python-tk@3.14 pillow
 ```
 
 Use **Run all** to discover players, fetch the service catalog, subscribe to the
@@ -22,8 +22,10 @@ credentials until **Reveal credential values locally** is enabled.
 
 The **Browse music** tab uses the same transport chooser as the desktop app:
 manifest-backed services load their home page through the modern authenticated
-content endpoint, while ordinary services use SMAPI. Double-clicking an item
-returned by a modern home page switches to the desktop's encoded SMAPI child
+content endpoint, while ordinary services use SMAPI. Modern home pages contain
+several views, so the GUI presents each view as one artwork-backed section row;
+opening that row displays the items already embedded in the response. Opening an
+actual provider collection then switches to the desktop's encoded SMAPI child
 request. The tab shows the transport used for every page.
 
 The command-line decoder works with either interpreter.

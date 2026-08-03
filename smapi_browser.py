@@ -963,8 +963,47 @@ def desktop_content_object_id(service: Service, object_id: str) -> str:
     return prefix + _lower_percent_escapes(encoded)
 
 
+def _content_item_row(item: dict[str, Any], section: str = "") -> dict[str, Any] | None:
+    identity = item.get("id", {})
+    content = item.get("content", {})
+    if not isinstance(identity, dict) or not isinstance(content, dict):
+        return None
+    object_id = identity.get("objectId", "")
+    if not isinstance(object_id, str) or not object_id:
+        return None
+    record = content.get("container")
+    content_kind = "container"
+    if not isinstance(record, dict):
+        record = content.get("track")
+        content_kind = "track"
+    if not isinstance(record, dict):
+        return None
+    item_type = str(record.get("type", content_kind))
+    can_enumerate = record.get("canEnumerate")
+    collection_types = {"album", "artist", "container", "playlist", "show"}
+    kind = (
+        "mediaCollection"
+        if content_kind == "container" and (can_enumerate is True or item_type in collection_types)
+        else "mediaMetadata"
+    )
+    artist = record.get("artist", {})
+    artist_name = artist.get("name", "") if isinstance(artist, dict) else ""
+    return {
+        "kind": kind,
+        "id": object_id,
+        "title": record.get("name", object_id),
+        "item_type": item_type,
+        "artist": artist_name,
+        "summary": record.get("summary", ""),
+        "album_art_uri": record.get("imageUrl", ""),
+        "section": section,
+        "display_type": item.get("displayType", ""),
+        "source_transport": "content",
+    }
+
+
 def content_page_items(page: dict[str, Any]) -> list[dict[str, Any]]:
-    """Flatten a modern multi-view root into rows while preserving view labels."""
+    """Flatten modern views for diagnostics while retaining their section labels."""
     rows: list[dict[str, Any]] = []
     views = page.get("views", [])
     if not isinstance(views, list):
@@ -981,30 +1020,53 @@ def content_page_items(page: dict[str, Any]) -> list[dict[str, Any]]:
         for item in items:
             if not isinstance(item, dict):
                 continue
-            identity = item.get("id", {})
-            content = item.get("content", {})
-            container = content.get("container", {}) if isinstance(content, dict) else {}
-            if not isinstance(identity, dict) or not isinstance(container, dict):
-                continue
-            object_id = identity.get("objectId", "")
-            if not isinstance(object_id, str) or not object_id:
-                continue
-            artist = container.get("artist", {})
-            artist_name = artist.get("name", "") if isinstance(artist, dict) else ""
-            rows.append(
-                {
-                    "kind": "mediaCollection",
-                    "id": object_id,
-                    "title": container.get("name", object_id),
-                    "item_type": container.get("type", "container"),
-                    "artist": artist_name,
-                    "album_art_uri": container.get("imageUrl", ""),
-                    "section": section,
-                    "display_type": item.get("displayType", ""),
-                    "source_transport": "content",
-                }
-            )
+            row = _content_item_row(item, section)
+            if row:
+                rows.append(row)
     return rows
+
+
+def content_page_sections(page: dict[str, Any]) -> list[dict[str, Any]]:
+    """Represent each desktop content view as one drill-down root row."""
+    sections: list[dict[str, Any]] = []
+    views = page.get("views", [])
+    if not isinstance(views, list):
+        return sections
+    for view in views:
+        if not isinstance(view, dict):
+            continue
+        identity = view.get("id", {})
+        content = view.get("content", {})
+        container = content.get("container", {}) if isinstance(content, dict) else {}
+        if not isinstance(identity, dict) or not isinstance(container, dict):
+            continue
+        object_id = identity.get("objectId", "")
+        if not isinstance(object_id, str) or not object_id:
+            continue
+        title = str(container.get("name", object_id))
+        raw_items = view.get("items", [])
+        if not isinstance(raw_items, list):
+            raw_items = []
+        items = [
+            row
+            for item in raw_items if isinstance(item, dict)
+            if (row := _content_item_row(item)) is not None
+        ]
+        sections.append(
+            {
+                "kind": "mediaCollection",
+                "id": object_id,
+                "title": title,
+                "item_type": "section",
+                "album_art_uri": items[0].get("album_art_uri", "") if items else "",
+                "section": "",
+                "display_type": view.get("displayType", ""),
+                "source_transport": "content-section",
+                "embedded_total": int(view.get("total", len(items)) or len(items)),
+                "_embedded_items": items,
+            }
+        )
+    return sections
 
 
 class DesktopBrowseSession:
@@ -1018,6 +1080,7 @@ class DesktopBrowseSession:
 
     def __init__(self, client: SmapiClient, *, content_device_id: str | None = None) -> None:
         self.client = client
+        self.content_views: dict[str, dict[str, Any]] = {}
         self.content_endpoint = ""
         if client.service.manifest_uri:
             try:
@@ -1043,6 +1106,8 @@ class DesktopBrowseSession:
         *,
         from_content_page: bool = False,
     ) -> dict[str, Any]:
+        if object_id in self.content_views:
+            return self.content_views[object_id]
         if object_id in {"", "root"} and self.content_endpoint:
             page = content_browse(
                 self.client.service,
@@ -1053,12 +1118,26 @@ class DesktopBrowseSession:
                 refresh_client=self.client if self.client.allow_credential_refresh else None,
                 controller_id=self.client.controller_id,
             )
-            items = content_page_items(page)
+            sections = content_page_sections(page)
+            self.content_views = {}
+            for section in sections:
+                embedded = section.pop("_embedded_items", [])
+                section_id = str(section["id"])
+                self.content_views[section_id] = {
+                    "index": 0,
+                    "count": len(embedded),
+                    "total": int(section.get("embedded_total", len(embedded))),
+                    "items": embedded,
+                    "transport": "content",
+                    "endpoint": self.content_endpoint,
+                    "requested_id": section_id,
+                    "embedded": True,
+                }
             return {
                 "index": 0,
-                "count": len(items),
-                "total": len(items),
-                "items": items,
+                "count": len(sections),
+                "total": len(sections),
+                "items": sections,
                 "transport": "content",
                 "endpoint": self.content_endpoint,
                 "raw_page": page,

@@ -15,6 +15,7 @@ import copy
 import hashlib
 import html
 import http.client
+import io
 import json
 import os
 import queue
@@ -28,6 +29,7 @@ import time
 import traceback
 import tkinter
 import urllib.parse
+import urllib.request
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -48,6 +50,13 @@ from tkinter import ttk
 from typing import Any, Callable
 
 import smapi_browser as smapi
+
+try:
+    from PIL import Image as PILImage
+    from PIL import ImageTk
+except ImportError:  # The startup runtime check provides the actionable install command.
+    PILImage = None  # type: ignore[assignment]
+    ImageTk = None  # type: ignore[assignment]
 
 
 SSDP_ADDRESS = ("239.255.255.250", 1900)
@@ -600,6 +609,9 @@ class SonosExplorerApp:
         self.browser_contexts: dict[str, smapi.DesktopBrowseSession] = {}
         self.browser_stack: list[tuple[str, str, bool, int, dict[str, Any]]] = []
         self.browser_rows: dict[str, dict[str, Any]] = {}
+        self.browser_art_cache: dict[str, Any] = {}
+        self.browser_art_pending: set[str] = set()
+        self.browser_detail_image: Any = None
         self.last_export: dict[str, Any] = {}
         self.busy = False
 
@@ -659,6 +671,7 @@ class SonosExplorerApp:
             borderwidth=0,
         )
         style.map("Treeview", background=[("selected", SELECTED)], foreground=[("selected", TEXT)])
+        style.configure("Browser.Treeview", rowheight=60)
         style.configure("Treeview.Heading", background=PANEL_2, foreground=TEXT, relief="flat", padding=(8, 7))
         style.map("Treeview.Heading", background=[("active", BORDER)])
         style.configure("Horizontal.TProgressbar", troughcolor=PANEL_2, background=ACCENT, bordercolor=PANEL_2)
@@ -896,16 +909,30 @@ class SonosExplorerApp:
         pane.add(table_frame, weight=4)
         pane.add(details_frame, weight=2)
 
-        columns = ("section", "title", "artist", "type")
-        self.browser_tree = ttk.Treeview(table_frame, columns=columns, show="headings", selectmode="browse")
+        columns = ("title", "artist", "type", "open")
+        self.browser_tree = ttk.Treeview(
+            table_frame,
+            columns=columns,
+            show="tree headings",
+            selectmode="browse",
+            style="Browser.Treeview",
+        )
+        self.browser_tree.heading("#0", text="Art")
+        self.browser_tree.column("#0", width=66, minwidth=66, stretch=False)
         for key, label, width in (
-            ("section", "Section", 170),
-            ("title", "Title", 280),
+            ("title", "Title", 350),
             ("artist", "Artist", 180),
             ("type", "Type", 110),
+            ("open", "", 36),
         ):
             self.browser_tree.heading(key, text=label)
-            self.browser_tree.column(key, width=width, minwidth=70, stretch=key in {"title", "artist"})
+            self.browser_tree.column(
+                key,
+                width=width,
+                minwidth=30 if key == "open" else 70,
+                stretch=key in {"title", "artist"},
+                anchor="center" if key == "open" else "w",
+            )
         yscroll = ttk.Scrollbar(table_frame, orient="vertical", command=self.browser_tree.yview)
         xscroll = ttk.Scrollbar(table_frame, orient="horizontal", command=self.browser_tree.xview)
         self.browser_tree.configure(yscrollcommand=yscroll.set, xscrollcommand=xscroll.set)
@@ -916,6 +943,8 @@ class SonosExplorerApp:
         table_frame.columnconfigure(0, weight=1)
 
         ttk.Label(details_frame, text="Selected music item", style="Panel.TLabel").pack(anchor="w", pady=(0, 7))
+        self.browser_art_label = ttk.Label(details_frame, text="", style="Panel.TLabel")
+        self.browser_art_label.pack(anchor="w", pady=(0, 7))
         self.browser_details = self._make_text(details_frame)
         self.browser_details.pack(fill="both", expand=True)
         self._set_text(
@@ -1010,6 +1039,10 @@ class SonosExplorerApp:
         try:
             while True:
                 kind, payload = self.ui_queue.get_nowait()
+                if kind == "album_art":
+                    url, image_data = payload
+                    self._album_art_ready(url, image_data)
+                    continue
                 if kind == "success":
                     label, callback, result = payload
                     callback(result)
@@ -1271,6 +1304,8 @@ class SonosExplorerApp:
         for iid in self.browser_tree.get_children():
             self.browser_tree.delete(iid)
         self.browser_rows = {}
+        self.browser_detail_image = None
+        self.browser_art_label.configure(image="", text="")
         if not self.browser_stack:
             return
         object_id, _title, _from_content, page_index, page = self.browser_stack[-1]
@@ -1282,15 +1317,17 @@ class SonosExplorerApp:
                 continue
             iid = f"browse-{index}"
             self.browser_rows[iid] = item
+            art_url = str(item.get("album_art_uri", ""))
             self.browser_tree.insert(
                 "",
                 END,
                 iid=iid,
+                image=self.browser_art_cache.get(art_url, ""),
                 values=(
-                    item.get("section", ""),
                     item.get("title", item.get("id", "untitled")),
                     item.get("artist", ""),
                     item.get("item_type", item.get("kind", "")),
+                    "›" if item.get("kind") == "mediaCollection" else "",
                 ),
             )
         self.browser_path_var.set("  /  ".join(entry[1] for entry in self.browser_stack))
@@ -1314,6 +1351,57 @@ class SonosExplorerApp:
                 indent=2,
             ),
         )
+        self._load_browser_art()
+
+    def _load_browser_art(self) -> None:
+        if PILImage is None or ImageTk is None:
+            return
+        urls = []
+        for item in self.browser_rows.values():
+            url = str(item.get("album_art_uri", ""))
+            if url and url not in self.browser_art_cache and url not in self.browser_art_pending:
+                self.browser_art_pending.add(url)
+                urls.append(url)
+        if not urls:
+            return
+
+        def worker() -> None:
+            for url in urls:
+                try:
+                    request = urllib.request.Request(url, headers={"User-Agent": smapi.DESKTOP_USER_AGENT})
+                    with urllib.request.urlopen(request, timeout=10) as response:
+                        source = response.read(5 * 1024 * 1024 + 1)
+                    if len(source) > 5 * 1024 * 1024:
+                        raise ValueError("artwork response exceeds 5 MB")
+                    with PILImage.open(io.BytesIO(source)) as image:
+                        image.thumbnail((52, 52), PILImage.Resampling.LANCZOS)
+                        converted = image.convert("RGBA")
+                        output = io.BytesIO()
+                        converted.save(output, format="PNG")
+                    self.ui_queue.put(("album_art", (url, output.getvalue())))
+                except Exception:
+                    self.ui_queue.put(("album_art", (url, None)))
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _album_art_ready(self, url: str, image_data: bytes | None) -> None:
+        self.browser_art_pending.discard(url)
+        if not image_data or ImageTk is None:
+            return
+        try:
+            photo = ImageTk.PhotoImage(data=image_data)
+        except Exception:
+            return
+        self.browser_art_cache[url] = photo
+        for iid, item in self.browser_rows.items():
+            if str(item.get("album_art_uri", "")) == url and self.browser_tree.exists(iid):
+                self.browser_tree.item(iid, image=photo)
+        selection = self.browser_tree.selection()
+        if selection:
+            selected = self.browser_rows.get(selection[0], {})
+            if str(selected.get("album_art_uri", "")) == url:
+                self.browser_detail_image = photo
+                self.browser_art_label.configure(image=photo, text="")
 
     def _browser_item_selected(self, _event: object | None = None) -> None:
         selection = self.browser_tree.selection()
@@ -1321,6 +1409,13 @@ class SonosExplorerApp:
             return
         item = self.browser_rows.get(selection[0])
         if item:
+            art_url = str(item.get("album_art_uri", ""))
+            photo = self.browser_art_cache.get(art_url)
+            self.browser_detail_image = photo
+            self.browser_art_label.configure(
+                image=photo or "",
+                text="Loading artwork…" if art_url and not photo else "",
+            )
             self._set_text(self.browser_details, json.dumps(item, indent=2, ensure_ascii=False))
 
     def _browser_item_open(self, _event: object | None = None) -> None:
@@ -1595,7 +1690,11 @@ def main() -> None:
         candidate = Path("/opt/homebrew/bin/python3")
         if candidate.exists() and Path(sys.executable).resolve() != candidate.resolve():
             check = subprocess.run(
-                [str(candidate), "-c", "import tkinter; assert tkinter.TkVersion >= 8.6"],
+                [
+                    str(candidate),
+                    "-c",
+                    "import tkinter; from PIL import Image, ImageTk; assert tkinter.TkVersion >= 8.6",
+                ],
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
                 check=False,
@@ -1604,7 +1703,11 @@ def main() -> None:
                 os.execv(str(candidate), [str(candidate), *sys.argv])
         raise SystemExit(
             "This Mac's system Tk 8.5 cannot render the GUI. Install the current runtime with "
-            "`brew install python-tk@3.14`, then run this command again."
+            "`brew install python-tk@3.14 pillow`, then run this command again."
+        )
+    if PILImage is None or ImageTk is None:
+        raise SystemExit(
+            "Album artwork requires Pillow. Install it with `brew install pillow`, then run again."
         )
     root = Tk()
     SonosExplorerApp(root)
