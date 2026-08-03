@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import unittest
 import xml.etree.ElementTree as ET
+from types import SimpleNamespace
 from unittest.mock import patch
 
 from smapi_browser import (
@@ -16,15 +17,18 @@ from smapi_browser import (
     SmapiClient,
     SmapiFault,
     account_content_device_id,
+    artwork_uri,
     content_auth_header,
     content_browse,
     content_browse_headers,
     content_page_items,
     content_page_sections,
+    crawl_account_tree,
     desktop_content_object_id,
     descendants,
     element_value,
     host_device_id,
+    legacy_item_kind,
     local_name,
     parse_accounts,
     redact_diagnostic,
@@ -510,6 +514,18 @@ class ProtocolFlowTests(unittest.TestCase):
         instance.search("artist", "term", 990, 100)
         self.assertEqual(seen["count"], "10")
 
+    def test_get_metadata_retries_transient_provider_timeout(self) -> None:
+        instance = client("Anonymous")
+        fault = SmapiFault("soap:Server.ServiceUnknownError", "Read timed out", 500)
+        success = ET.fromstring(
+            f'<getMetadataResponse xmlns="{SMAPI_NS}"><getMetadataResult>'
+            '<index>0</index><count>0</count><total>0</total>'
+            '</getMetadataResult></getMetadataResponse>'
+        )
+        with patch.object(instance, "_request_with_refresh", side_effect=[fault, success]) as request:
+            self.assertEqual(instance.get_metadata("root")["total"], 0)
+        self.assertEqual(request.call_count, 2)
+
 
 class ParserTests(unittest.TestCase):
     def test_fault_diagnostics_redact_embedded_refresh_credentials(self) -> None:
@@ -562,6 +578,56 @@ class ParserTests(unittest.TestCase):
         )
         item = instance.get_metadata("root")["items"][0]
         self.assertEqual(item["album_art_uri"], "https://example.invalid/art.jpg")
+
+    def test_stream_metadata_logo_is_used_as_artwork(self) -> None:
+        self.assertEqual(
+            artwork_uri({"streamMetadata": {"logo": "https://example.invalid/logo.png"}}),
+            "https://example.invalid/logo.png",
+        )
+
+    def test_playable_program_is_not_presented_as_a_browse_container(self) -> None:
+        self.assertEqual(
+            legacy_item_kind(
+                "mediaCollection",
+                {"id": "WebRadio-program:1", "itemType": "program", "canPlay": "true", "canEnumerate": "false"},
+            ),
+            "mediaMetadata",
+        )
+
+    def test_provider_action_is_not_presented_as_a_browse_container(self) -> None:
+        self.assertEqual(
+            legacy_item_kind(
+                "mediaCollection",
+                {"id": "upsell-banner/#upsell_banner", "itemType": "container", "canEnumerate": "true"},
+            ),
+            "mediaMetadata",
+        )
+
+    def test_artwork_template_is_renderable(self) -> None:
+        self.assertEqual(
+            artwork_uri({"albumArtURI": "https://example.invalid/w_${width}/${ratio}/art.png"}),
+            "https://example.invalid/w_400/1x1/art.png",
+        )
+
+
+class CrawlTests(unittest.TestCase):
+    def test_crawler_records_references_without_reopening_them(self) -> None:
+        fake = SimpleNamespace()
+        fake.client = SimpleNamespace(service=service("Anonymous"), account=account())
+
+        def browse(object_id: str, index: int, count: int, *, from_content_page: bool = False):
+            del index, count, from_content_page
+            if object_id == "root":
+                items = [{"id": "child", "title": "Child", "kind": "mediaCollection"}]
+            else:
+                items = [{"id": "root", "title": "Root again", "kind": "mediaCollection"}]
+            return {"index": 0, "count": len(items), "total": len(items), "items": items, "transport": "smapi"}
+
+        fake.browse = browse
+        report = crawl_account_tree(fake)
+        cycle = report["tree"]["items"][0]["children"]["items"][0]["children"]
+        self.assertEqual(cycle["status"], "reference")
+        self.assertEqual(report["stats"]["collections_opened"], 2)
 
 
 if __name__ == "__main__":

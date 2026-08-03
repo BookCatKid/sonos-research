@@ -58,6 +58,11 @@ python3 smapi_browser.py --probe-all
 # Opt into the desktop-style process-local refresh and one retry when needed.
 python3 smapi_browser.py --probe-all --refresh-credentials
 
+# Build a checkpointed, credential-redacted hierarchy for every account.
+python3 smapi_browser.py --host 192.168.1.51 --crawl-all \
+  --max-depth 12 --max-nodes 5000 --max-collections 300 --max-seconds 30 \
+  --tree-output analysis/music-service-tree.json
+
 # Browse a root with the desktop transport chooser, or a returned SMAPI container ID
 python3 smapi_browser.py --service-id 256 --id root
 python3 smapi_browser.py --service-id 256 --id R1-mediaCollection
@@ -83,6 +88,12 @@ current browser process, and retried. Decompilation of the active desktop call
 path confirmed that it also updates its in-memory account model rather than
 writing replacement credentials to a player. The option therefore does not
 modify household state.
+
+`--crawl-all` walks collections breadth-first so every root branch is sampled
+before the crawler descends further. It paginates SMAPI results, preserves leaf
+items, detects repeated IDs, applies explicit time/item/collection/depth limits,
+and checkpoints after each account. Provider metadata and faults are recursively
+credential-redacted before being written.
 
 An account containing Sonos's literal `needs_reauth` marker cannot be refreshed;
 it must first be reauthorized through Sonos. `--probe-all` reports that state

@@ -409,6 +409,32 @@ account's saved channel, confirming the deeper handoff.
 Run `python3 smapi_browser.py --probe-all` for a fresh per-account result. It does
 not print token/key values.
 
+### Full household hierarchy audit
+
+The breadth-first `--crawl-all` audit on 2026-08-02 covered all 14 configured
+accounts with a per-account ceiling of 30 seconds, 300 opened collections, 5,000
+returned items, and depth 12. The checkpointed report is
+`analysis/music-service-tree-2026-08-02.json`.
+
+The corrected implementation produced zero browse errors for SiriusXM, Audible,
+NRK Radio, Sveriges Radio, Sonos Radio, myTuner Radio, Radio Paradise, and
+JazzGroove.org. SiriusXM alone opened 79 collections and returned 1,150 items in
+its time window. The audit also established three controller presentation rules:
+
+- `streamMetadata.logo` is a provider artwork source alongside `albumArtURI`,
+  nested `trackMetadata.albumArtURI`, and content JSON `imageUrl`;
+- a SOAP `mediaCollection` is not automatically drillable: `canEnumerate=false`
+  playable programs/streams are action leaves;
+- Amazon upsell banners and Audible marketplace-switch records are controller
+  actions rather than `getMetadata` containers.
+
+After those fixes, the remaining recorded faults are provider-side: the two
+Pandora accounts fail authentication at their roots; Apple accepts its content
+root token but rejects legacy child requests; CBC's Holidays container returns
+its own `WebRadioLineupWebClientError`; and one Amazon playlist transiently timed
+out but succeeded immediately when requested again. These faults and their exact
+tree paths are retained in the report.
+
 ## Home Assistant integration direction
 
 For an HA-side account inventory or diagnostic, subscribe to

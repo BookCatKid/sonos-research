@@ -11,13 +11,16 @@ import queue
 import re
 import sys
 import threading
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
 import uuid
 import xml.etree.ElementTree as ET
+from collections import deque
 from dataclasses import dataclass, replace
 from http.server import ThreadingHTTPServer
+from pathlib import Path
 from typing import Any
 
 from decode_third_party_media_servers import (
@@ -71,6 +74,63 @@ def element_value(node: ET.Element) -> Any:
         else:
             result[name] = value
     return result
+
+
+def artwork_uri(record: Any) -> str:
+    """Resolve the artwork shapes used across content JSON and SMAPI services."""
+    if not isinstance(record, dict):
+        return ""
+    for key in ("album_art_uri", "albumArtURI", "albumArtUri", "imageUrl", "logo"):
+        value = record.get(key)
+        if isinstance(value, str) and value:
+            return (
+                value.replace("${width}", "400")
+                .replace("${height}", "400")
+                .replace("${ratio}", "1x1")
+            )
+    for key in ("streamMetadata", "trackMetadata", "metadata", "container", "track", "album"):
+        value = artwork_uri(record.get(key))
+        if value:
+            return value
+    return ""
+
+
+def _explicit_bool(value: Any) -> bool | None:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        if value.lower() == "true":
+            return True
+        if value.lower() == "false":
+            return False
+    return None
+
+
+def legacy_item_kind(provider_kind: str, record: dict[str, Any]) -> str:
+    """Mirror the desktop's canPush distinction for legacy SMAPI records."""
+    if provider_kind != "mediaCollection":
+        return provider_kind
+    object_id = str(record.get("id", "")).lower()
+    # These provider records are controller actions, not browse containers.
+    if object_id.startswith(("upsell-banner/", "refmarketplace:")):
+        return "mediaMetadata"
+    can_enumerate = _explicit_bool(record.get("canEnumerate"))
+    if can_enumerate is True:
+        return provider_kind
+    if can_enumerate is False:
+        return "mediaMetadata"
+    item_type = str(record.get("itemType", "")).lower()
+    if item_type in {"program", "stream", "track"}:
+        return "mediaMetadata"
+    if _explicit_bool(record.get("canPlay")) is True and item_type not in {
+        "album",
+        "albumlist",
+        "collection",
+        "container",
+        "playlist",
+    }:
+        return "mediaMetadata"
+    return provider_kind
 
 
 SENSITIVE_DIAGNOSTIC_FIELDS = {
@@ -491,6 +551,7 @@ class SmapiClient:
             status = error.code
             result = error.read()
             response_headers = dict(error.headers.items()) if error.headers else {}
+            error.close()
         try:
             root = ET.fromstring(result)
         except ET.ParseError as error:
@@ -626,6 +687,14 @@ class SmapiClient:
         combined = f"{fault.code} {fault.message}".lower()
         return "invalidsession" in combined or "invalid session" in combined
 
+    @staticmethod
+    def _is_transient_fault(fault: SmapiFault) -> bool:
+        combined = f"{fault.code} {fault.message}".lower()
+        return fault.http_status in {408, 429, 502, 503, 504} or any(
+            marker in combined
+            for marker in ("read timed out", "timed out reading", "temporarily unavailable", "try again")
+        )
+
     def get_session_id(self) -> str:
         """Obtain and cache the DeviceLink session used in browse credentials."""
         if self.service.auth != "DeviceLink":
@@ -689,10 +758,18 @@ class SmapiClient:
         fields = {"id": object_id, "index": str(index), "count": str(count)}
         if recursive:
             fields["recursive"] = "true"
-        root = self._request_with_refresh(
-            "getMetadata",
-            fields,
-        )
+        for attempt in range(2):
+            try:
+                root = self._request_with_refresh("getMetadata", fields)
+                break
+            except SmapiFault as fault:
+                if attempt or not self._is_transient_fault(fault):
+                    raise
+            except (TimeoutError, urllib.error.URLError):
+                if attempt:
+                    raise
+        else:  # pragma: no cover - both retry exits are explicit
+            raise RuntimeError("getMetadata retry exhausted")
         results = descendants(root, "getMetadataResult")
         result = results[0] if results else root
         items: list[dict[str, Any]] = []
@@ -702,11 +779,12 @@ class SmapiClient:
                 continue
             record = element_value(node)
             assert isinstance(record, dict)
-            record["kind"] = kind
+            record["provider_kind"] = kind
+            record["kind"] = legacy_item_kind(kind, record)
             # Modern content JSON and legacy SMAPI use different spellings for
             # the same artwork field. Keep the provider response intact while
             # exposing one key to the GUI at every browse depth.
-            record["album_art_uri"] = record.get("albumArtURI", "")
+            record["album_art_uri"] = artwork_uri(record)
             items.append(record)
         return {
             "index": int(child_text(result, "index", str(index))),
@@ -721,7 +799,10 @@ class SmapiClient:
         if not results:
             raise RuntimeError("getMediaMetadata response did not contain a result")
         value = element_value(results[0])
-        return value if isinstance(value, dict) else {"value": value}
+        if isinstance(value, dict):
+            value["album_art_uri"] = artwork_uri(value)
+            return value
+        return {"value": value}
 
     def search(self, category_id: str, term: str, index: int = 0, count: int = 100) -> dict[str, Any]:
         count = min(count, max(0, 1000 - index))
@@ -806,6 +887,7 @@ def service_manifest(service: Service) -> dict[str, Any]:
         with urllib.request.urlopen(request, timeout=20) as response:
             payload = response.read()
     except urllib.error.HTTPError as error:
+        error.close()
         raise ContentBrowseFault(service, f"manifest HTTP {error.code}", error.code) from error
     try:
         manifest = json.loads(payload)
@@ -921,6 +1003,7 @@ def content_browse(
                 payload = response.read()
         except urllib.error.HTTPError as error:
             payload = error.read()
+            error.close()
             if error.code == 401 and attempt == 0 and refresh_client is not None:
                 # SCContentSessionBrowse treats HTTP 401 specially: it runs the
                 # account's explicit refreshAuthToken operation and retries the
@@ -986,7 +1069,7 @@ def _content_item_row(item: dict[str, Any], section: str = "") -> dict[str, Any]
         "item_type": item_type,
         "artist": artist_name,
         "summary": record.get("summary", ""),
-        "album_art_uri": record.get("imageUrl", ""),
+        "album_art_uri": artwork_uri(record),
         "section": section,
         "display_type": item.get("displayType", ""),
         "source_transport": "content",
@@ -1205,6 +1288,267 @@ def interactive_browse(session: DesktopBrowseSession) -> None:
             print(json.dumps(detail, indent=2, ensure_ascii=False))
 
 
+def _crawl_error(error: Exception) -> dict[str, Any]:
+    if isinstance(error, SmapiFault):
+        result: dict[str, Any] = {
+            "type": "SmapiFault",
+            "code": error.code,
+            "message": error.message,
+            "http_status": error.http_status,
+        }
+        if error.detail is not None:
+            result["detail"] = redact_diagnostic(error.detail)
+        return result
+    return {"type": error.__class__.__name__, "message": str(error)}
+
+
+def crawl_account_tree(
+    session: DesktopBrowseSession,
+    *,
+    max_depth: int = 8,
+    max_nodes: int = 25_000,
+    max_collections: int = 1_000,
+    max_seconds: float = 120.0,
+    page_size: int = 100,
+) -> dict[str, Any]:
+    """Browse every reachable collection for one account without exposing credentials."""
+    seen: dict[str, str] = {}
+    errors: list[dict[str, Any]] = []
+    stats = {
+        "collections_opened": 0,
+        "items_seen": 0,
+        "pages_requested": 0,
+        "references": 0,
+        "errors": 0,
+        "depth_limit_hits": 0,
+        "node_limit_hits": 0,
+        "collection_limit_hits": 0,
+        "time_limit_hits": 0,
+    }
+    deadline = time.monotonic() + max_seconds
+
+    def browse_all(object_id: str, from_content: bool) -> dict[str, Any]:
+        merged: dict[str, Any] | None = None
+        index = 0
+        while True:
+            page = session.browse(
+                object_id,
+                index,
+                page_size,
+                from_content_page=from_content,
+            )
+            stats["pages_requested"] += 1
+            if merged is None:
+                merged = {key: value for key, value in page.items() if key not in {"items", "raw_page"}}
+                merged["items"] = []
+            items = page.get("items", [])
+            if not isinstance(items, list):
+                items = []
+            merged["items"].extend(items)
+            # Content-session views contain their currently embedded items and
+            # have no provider-defined pagination URL. Network children are
+            # SMAPI and use the ordinary index/count loop below.
+            if page.get("transport") == "content":
+                break
+            if stats["items_seen"] + len(merged["items"]) >= max_nodes or time.monotonic() >= deadline:
+                merged["truncated"] = True
+                break
+            total = int(page.get("total", len(merged["items"])) or 0)
+            next_index = int(page.get("index", index) or index) + len(items)
+            if not items or next_index >= total or next_index <= index:
+                break
+            index = next_index
+        assert merged is not None
+        return merged
+
+    root: dict[str, Any] = {"id": "root", "title": session.client.service.name, "depth": 0}
+    pending = deque([(root, "root", session.client.service.name, 0, False, session.client.service.name)])
+    while pending:
+        node, object_id, title, depth, from_content, path = pending.popleft()
+        if time.monotonic() >= deadline:
+            node["status"] = "time-limit"
+            stats["time_limit_hits"] += 1
+            for remaining, *_rest in pending:
+                remaining["status"] = "time-limit"
+                stats["time_limit_hits"] += 1
+            break
+        if object_id in seen:
+            node.update(status="reference", ref=seen[object_id])
+            stats["references"] += 1
+            continue
+        if stats["collections_opened"] >= max_collections:
+            node["status"] = "collection-limit"
+            stats["collection_limit_hits"] += 1
+            continue
+        if stats["items_seen"] >= max_nodes:
+            node["status"] = "node-limit"
+            stats["node_limit_hits"] += 1
+            continue
+        if depth > max_depth:
+            node["status"] = "depth-limit"
+            stats["depth_limit_hits"] += 1
+            continue
+
+        seen[object_id] = path
+        try:
+            page = browse_all(object_id, from_content)
+        except Exception as error:
+            diagnostic = _crawl_error(error)
+            node.update(status="error", error=diagnostic)
+            errors.append({"path": path, "id": object_id, **diagnostic})
+            stats["errors"] += 1
+            continue
+
+        stats["collections_opened"] += 1
+        node.update(
+            status="ok",
+            transport=page.get("transport", "smapi"),
+            requested_id=page.get("requested_id", object_id),
+            total=int(page.get("total", 0) or 0),
+        )
+        endpoint = page.get("endpoint")
+        if endpoint:
+            node["endpoint"] = endpoint
+        if page.get("truncated"):
+            node["truncated"] = True
+        children: list[dict[str, Any]] = []
+        for item in page.get("items", []):
+            if not isinstance(item, dict):
+                continue
+            stats["items_seen"] += 1
+            public_item = {
+                key: value
+                for key, value in item.items()
+                if not key.startswith("_") and key not in {"source_transport"}
+            }
+            child = redact_diagnostic(public_item)
+            assert isinstance(child, dict)
+            child_id = str(item.get("id", ""))
+            child_title = str(item.get("title", child_id or "untitled"))
+            child_path = f"{path} / {child_title}"
+            if item.get("kind") == "mediaCollection" and child_id:
+                child_node = {"id": child_id, "title": child_title, "depth": depth + 1}
+                child["children"] = child_node
+                pending.append(
+                    (
+                        child_node,
+                        child_id,
+                        child_title,
+                        depth + 1,
+                        item.get("source_transport") == "content",
+                        child_path,
+                    )
+                )
+            children.append(child)
+            if stats["items_seen"] >= max_nodes:
+                stats["node_limit_hits"] += 1
+                break
+        node["items"] = children
+    return {
+        "service_id": session.client.service.service_id,
+        "service": session.client.service.name,
+        "serial": session.client.account.serial,
+        "nickname": session.client.account.nickname,
+        "auth": session.client.service.auth,
+        "limits": {
+            "max_depth": max_depth,
+            "max_nodes": max_nodes,
+            "max_collections": max_collections,
+            "max_seconds": max_seconds,
+            "page_size": page_size,
+        },
+        "stats": stats,
+        "errors": errors,
+        "tree": root,
+    }
+
+
+def crawl_all_account_trees(
+    host: str,
+    household_id: str,
+    services: dict[int, Service],
+    accounts: list[Account],
+    *,
+    host_device_identity: str | None = None,
+    refresh_credentials: bool = True,
+    max_depth: int = 8,
+    max_nodes: int = 25_000,
+    max_collections: int = 1_000,
+    max_seconds: float = 120.0,
+    page_size: int = 100,
+    checkpoint_path: Path | None = None,
+) -> dict[str, Any]:
+    device_id = player_device_id(host)
+    zone_id = player_zone_id(host)
+    trees: list[dict[str, Any]] = []
+
+    def report() -> dict[str, Any]:
+        return {
+            "schema": "sonos-account-music-tree-v1",
+            "household_id": household_id,
+            "player": host,
+            "account_count": len(trees),
+            "accounts": trees,
+        }
+
+    for account in accounts:
+        service = services.get(account.service_id)
+        if not service:
+            continue
+        print(f"Crawling {account_label(service, account)}...", file=sys.stderr, flush=True)
+        started = time.monotonic()
+        client = SmapiClient(
+            service,
+            account,
+            household_id,
+            device_id,
+            zone_id,
+            host,
+            host_device_id=host_device_identity or host_device_id(host),
+            allow_credential_refresh=refresh_credentials,
+        )
+        try:
+            trees.append(
+                crawl_account_tree(
+                    DesktopBrowseSession(client),
+                    max_depth=max_depth,
+                    max_nodes=max_nodes,
+                    max_collections=max_collections,
+                    max_seconds=max_seconds,
+                    page_size=page_size,
+                )
+            )
+        except Exception as error:
+            trees.append(
+                {
+                    "service_id": service.service_id,
+                    "service": service.name,
+                    "serial": account.serial,
+                    "nickname": account.nickname,
+                    "auth": service.auth,
+                    "stats": {"errors": 1},
+                    "errors": [{"path": service.name, **_crawl_error(error)}],
+                    "tree": {"id": "root", "title": service.name, "status": "error", "error": _crawl_error(error)},
+                }
+            )
+        completed = trees[-1]
+        stats = completed.get("stats", {})
+        print(
+            f"Finished {account_label(service, account)} in {time.monotonic() - started:.1f}s: "
+            f"{stats.get('collections_opened', 0)} collections, "
+            f"{stats.get('items_seen', 0)} items, {stats.get('errors', 0)} errors",
+            file=sys.stderr,
+            flush=True,
+        )
+        if checkpoint_path is not None:
+            checkpoint_path.parent.mkdir(parents=True, exist_ok=True)
+            checkpoint_path.write_text(
+                json.dumps(report(), indent=2, ensure_ascii=False) + "\n",
+                encoding="utf-8",
+            )
+    return report()
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--host", help="Sonos player IP; otherwise use SSDP")
@@ -1214,6 +1558,12 @@ def main() -> None:
     )
     parser.add_argument("--list", action="store_true", help="list configured service accounts")
     parser.add_argument("--probe-all", action="store_true", help="test a one-item root browse for every account")
+    parser.add_argument("--crawl-all", action="store_true", help="recursively browse every configured account")
+    parser.add_argument("--tree-output", help="write --crawl-all JSON to this file instead of stdout")
+    parser.add_argument("--max-depth", type=int, default=8, help="maximum collection depth for --crawl-all")
+    parser.add_argument("--max-nodes", type=int, default=25000, help="maximum returned items per account for --crawl-all")
+    parser.add_argument("--max-collections", type=int, default=1000, help="maximum opened collections per account")
+    parser.add_argument("--max-seconds", type=float, default=120.0, help="maximum crawl time per account")
     parser.add_argument(
         "--refresh-credentials",
         action="store_true",
@@ -1239,6 +1589,43 @@ def main() -> None:
     else:
         host, household_id = discover()
     services, accounts = inventory(host, household_id)
+    if args.crawl_all:
+        crawl_accounts = [
+            account
+            for account in accounts
+            if (args.service_id is None or account.service_id == args.service_id)
+            and (args.serial is None or account.serial == args.serial)
+        ]
+        output_path = Path(args.tree_output).expanduser().resolve() if args.tree_output else None
+        report = crawl_all_account_trees(
+            host,
+            household_id,
+            services,
+            crawl_accounts,
+            host_device_identity=args.device_id,
+            refresh_credentials=True,
+            max_depth=max(0, args.max_depth),
+            max_nodes=max(1, args.max_nodes),
+            max_collections=max(1, args.max_collections),
+            max_seconds=max(1.0, args.max_seconds),
+            page_size=max(1, min(args.count, 1000)),
+            checkpoint_path=output_path,
+        )
+        rendered = json.dumps(report, indent=2, ensure_ascii=False)
+        if args.tree_output:
+            assert output_path is not None
+            output_path.parent.mkdir(parents=True, exist_ok=True)
+            output_path.write_text(rendered + "\n", encoding="utf-8")
+            summary = {
+                "status": "ok",
+                "output": str(output_path),
+                "account_count": report["account_count"],
+                "errors": sum(account["stats"].get("errors", 0) for account in report["accounts"]),
+            }
+            print(json.dumps(summary, indent=2, ensure_ascii=False))
+        else:
+            print(rendered)
+        return
     if args.probe_all:
         device_id = player_device_id(host)
         zone_id = player_zone_id(host)
