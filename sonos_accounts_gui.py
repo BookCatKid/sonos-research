@@ -44,6 +44,8 @@ from tkinter import (
 from tkinter import ttk
 from typing import Any, Callable
 
+import smapi_browser as smapi
+
 
 SSDP_ADDRESS = ("239.255.255.250", 1900)
 ZONE_PLAYER_ST = "urn:schemas-upnp-org:device:ZonePlayer:1"
@@ -592,6 +594,9 @@ class SonosExplorerApp:
         self.players: list[DiscoveredPlayer] = []
         self.services: list[dict[str, str]] = []
         self.account_data: dict[str, Any] | None = None
+        self.browser_contexts: dict[str, smapi.DesktopBrowseSession] = {}
+        self.browser_stack: list[tuple[str, str, bool, int, dict[str, Any]]] = []
+        self.browser_rows: dict[str, dict[str, Any]] = {}
         self.last_export: dict[str, Any] = {}
         self.busy = False
 
@@ -604,6 +609,9 @@ class SonosExplorerApp:
         self.reveal_var = BooleanVar(value=False)
         self.status_var = StringVar(value="Ready")
         self.summary_var = StringVar(value="No Sonos data loaded yet")
+        self.browser_account_var = StringVar()
+        self.browser_path_var = StringVar(value="Load browser accounts to begin")
+        self.browser_transport_var = StringVar(value="")
 
         self.ui_queue: queue.Queue[tuple[str, Any]] = queue.Queue()
         self._configure_styles()
@@ -727,6 +735,7 @@ class SonosExplorerApp:
 
         self._build_services_tab()
         self._build_accounts_tab()
+        self._build_browser_tab()
         self._build_json_tab()
         self._build_log_tab()
 
@@ -822,6 +831,95 @@ class SonosExplorerApp:
         self.account_details.pack(fill="both", expand=True)
         self._set_text(self.account_details, "Run account inspection, then select an instance.")
 
+    def _build_browser_tab(self) -> None:
+        tab = ttk.Frame(self.notebook, style="Panel.TFrame", padding=10)
+        self.notebook.add(tab, text="Browse music")
+
+        toolbar = ttk.Frame(tab, style="Panel.TFrame")
+        toolbar.pack(fill="x", pady=(0, 8))
+        ttk.Label(toolbar, text="Account", style="Panel.TLabel").pack(side=LEFT)
+        self.browser_account_combo = ttk.Combobox(
+            toolbar,
+            textvariable=self.browser_account_var,
+            state="readonly",
+            width=38,
+        )
+        self.browser_account_combo.pack(side=LEFT, padx=(8, 8))
+        self.browser_load_button = ttk.Button(
+            toolbar,
+            text="Load accounts",
+            style="Secondary.TButton",
+            command=self.load_browser_accounts,
+        )
+        self.browser_load_button.pack(side=LEFT, padx=(0, 8))
+        self.browser_back_button = ttk.Button(
+            toolbar,
+            text="Back",
+            style="Secondary.TButton",
+            command=self.browser_back,
+        )
+        self.browser_back_button.pack(side=LEFT, padx=(0, 8))
+        self.browser_previous_button = ttk.Button(
+            toolbar,
+            text="Previous page",
+            style="Secondary.TButton",
+            command=self.browser_previous,
+        )
+        self.browser_previous_button.pack(side=LEFT, padx=(0, 8))
+        self.browser_next_button = ttk.Button(
+            toolbar,
+            text="Next page",
+            style="Secondary.TButton",
+            command=self.browser_next,
+        )
+        self.browser_next_button.pack(side=LEFT, padx=(0, 8))
+        self.browser_refresh_button = ttk.Button(
+            toolbar,
+            text="Refresh",
+            style="Secondary.TButton",
+            command=self.browser_refresh,
+        )
+        self.browser_refresh_button.pack(side=LEFT)
+        ttk.Label(toolbar, textvariable=self.browser_transport_var, style="Muted.TLabel").pack(side=RIGHT)
+
+        path = ttk.Frame(tab, style="Panel2.TFrame", padding=(10, 7))
+        path.pack(fill="x", pady=(0, 8))
+        ttk.Label(path, textvariable=self.browser_path_var, style="Muted.TLabel").pack(anchor="w")
+
+        pane = ttk.Panedwindow(tab, orient=HORIZONTAL)
+        pane.pack(fill="both", expand=True)
+        table_frame = ttk.Frame(pane, style="Panel.TFrame")
+        details_frame = ttk.Frame(pane, style="Panel.TFrame")
+        pane.add(table_frame, weight=4)
+        pane.add(details_frame, weight=2)
+
+        columns = ("section", "title", "artist", "type")
+        self.browser_tree = ttk.Treeview(table_frame, columns=columns, show="headings", selectmode="browse")
+        for key, label, width in (
+            ("section", "Section", 170),
+            ("title", "Title", 280),
+            ("artist", "Artist", 180),
+            ("type", "Type", 110),
+        ):
+            self.browser_tree.heading(key, text=label)
+            self.browser_tree.column(key, width=width, minwidth=70, stretch=key in {"title", "artist"})
+        yscroll = ttk.Scrollbar(table_frame, orient="vertical", command=self.browser_tree.yview)
+        xscroll = ttk.Scrollbar(table_frame, orient="horizontal", command=self.browser_tree.xview)
+        self.browser_tree.configure(yscrollcommand=yscroll.set, xscrollcommand=xscroll.set)
+        self.browser_tree.grid(row=0, column=0, sticky="nsew")
+        yscroll.grid(row=0, column=1, sticky="ns")
+        xscroll.grid(row=1, column=0, sticky="ew")
+        table_frame.rowconfigure(0, weight=1)
+        table_frame.columnconfigure(0, weight=1)
+
+        ttk.Label(details_frame, text="Selected music item", style="Panel.TLabel").pack(anchor="w", pady=(0, 7))
+        self.browser_details = self._make_text(details_frame)
+        self.browser_details.pack(fill="both", expand=True)
+        self._set_text(
+            self.browser_details,
+            "Double-click a collection to browse it. The transport label shows whether the official content or SMAPI path was used.",
+        )
+
     def _build_json_tab(self) -> None:
         tab = ttk.Frame(self.notebook, style="Panel.TFrame", padding=10)
         self.notebook.add(tab, text="JSON")
@@ -857,6 +955,9 @@ class SonosExplorerApp:
         self.host_combo.bind("<<ComboboxSelected>>", self._player_selected)
         self.services_tree.bind("<<TreeviewSelect>>", self._service_selected)
         self.accounts_tree.bind("<<TreeviewSelect>>", self._account_selected)
+        self.browser_account_combo.bind("<<ComboboxSelected>>", self._browser_account_selected)
+        self.browser_tree.bind("<<TreeviewSelect>>", self._browser_item_selected)
+        self.browser_tree.bind("<Double-1>", self._browser_item_open)
         self.search_var.trace_add("write", lambda *_args: self._render_services())
 
     def _parse_positive_number(self, value: str, label: str, *, allow_zero: bool = False) -> int:
@@ -931,6 +1032,11 @@ class SonosExplorerApp:
             self.services_button,
             self.accounts_button,
             self.run_all_button,
+            self.browser_load_button,
+            self.browser_back_button,
+            self.browser_previous_button,
+            self.browser_next_button,
+            self.browser_refresh_button,
         ):
             button.configure(state=state)
 
@@ -1071,6 +1177,229 @@ class SonosExplorerApp:
             f"{selected_player.name}: {len(services)} services, {count} account instance{'s' if count != 1 else ''}"
         )
         self.notebook.select(0)
+
+    def load_browser_accounts(self) -> None:
+        try:
+            host, household, timeout, _wait, _port = self._connection_values(require_household=False)
+        except SonosError as exc:
+            messagebox.showerror("Sonos Service Explorer", str(exc), parent=self.root)
+            return
+
+        def work() -> tuple[str, dict[str, smapi.DesktopBrowseSession]]:
+            actual_household = household
+            if not actual_household:
+                actual_household = discover_matching_player(host, timeout).household
+            services, accounts = smapi.inventory(host, actual_household)
+            player_id = smapi.player_device_id(host)
+            zone_id = smapi.player_zone_id(host)
+            contexts: dict[str, smapi.DesktopBrowseSession] = {}
+            for account in accounts:
+                service = services.get(account.service_id)
+                if not service:
+                    continue
+                label = smapi.account_label(service, account)
+                contexts[label] = smapi.DesktopBrowseSession(
+                    smapi.SmapiClient(
+                        service,
+                        account,
+                        actual_household,
+                        player_id,
+                        zone_id,
+                        host,
+                        allow_credential_refresh=True,
+                    )
+                )
+            return actual_household, contexts
+
+        self._run_task("Loading browsable music accounts…", work, self._browser_accounts_complete)
+
+    def _browser_accounts_complete(
+        self,
+        result: tuple[str, dict[str, smapi.DesktopBrowseSession]],
+    ) -> None:
+        household, contexts = result
+        if not contexts:
+            messagebox.showerror(
+                "Sonos Service Explorer",
+                "No configured music-service accounts were found",
+                parent=self.root,
+            )
+            return
+        self.household_var.set(household)
+        self.browser_contexts = contexts
+        labels = list(contexts)
+        self.browser_account_combo.configure(values=labels)
+        self.browser_account_var.set(labels[0])
+        self.notebook.select(2)
+        self.root.after(0, self._browse_root)
+
+    def _browser_account_selected(self, _event: object | None = None) -> None:
+        if self.browser_account_var.get() in self.browser_contexts:
+            self._browse_root()
+
+    def _browse_root(self) -> None:
+        label = self.browser_account_var.get()
+        session = self.browser_contexts.get(label)
+        if not session:
+            return
+        self._run_task(
+            f"Browsing {label}…",
+            lambda: session.browse("root", 0, 100),
+            lambda page: self._browser_page_complete("root", session.client.service.name, False, page, reset=True),
+        )
+
+    def _browser_page_complete(
+        self,
+        object_id: str,
+        title: str,
+        from_content: bool,
+        page: dict[str, Any],
+        *,
+        reset: bool = False,
+    ) -> None:
+        entry = (object_id, title, from_content, int(page.get("index", 0) or 0), page)
+        if reset:
+            self.browser_stack = [entry]
+        else:
+            self.browser_stack.append(entry)
+        self._render_browser_page()
+
+    def _render_browser_page(self) -> None:
+        for iid in self.browser_tree.get_children():
+            self.browser_tree.delete(iid)
+        self.browser_rows = {}
+        if not self.browser_stack:
+            return
+        object_id, _title, _from_content, page_index, page = self.browser_stack[-1]
+        items = page.get("items", [])
+        if not isinstance(items, list):
+            items = []
+        for index, item in enumerate(items):
+            if not isinstance(item, dict):
+                continue
+            iid = f"browse-{index}"
+            self.browser_rows[iid] = item
+            self.browser_tree.insert(
+                "",
+                END,
+                iid=iid,
+                values=(
+                    item.get("section", ""),
+                    item.get("title", item.get("id", "untitled")),
+                    item.get("artist", ""),
+                    item.get("item_type", item.get("kind", "")),
+                ),
+            )
+        self.browser_path_var.set("  /  ".join(entry[1] for entry in self.browser_stack))
+        transport = page.get("transport", "smapi")
+        first = page_index + 1 if items else 0
+        last = page_index + len(items)
+        total = int(page.get("total", len(items)) or 0)
+        self.browser_transport_var.set(f"Transport: {transport} · {first}-{last} of {total}")
+        self.summary_var.set(f"Browsing {self.browser_account_var.get()}: {len(items)} items")
+        self._set_text(
+            self.browser_details,
+            json.dumps(
+                {
+                    "object_id": object_id,
+                    "transport": transport,
+                    "requested_id": page.get("requested_id", object_id),
+                    "index": page_index,
+                    "total": total,
+                    "endpoint": page.get("endpoint", ""),
+                },
+                indent=2,
+            ),
+        )
+
+    def _browser_item_selected(self, _event: object | None = None) -> None:
+        selection = self.browser_tree.selection()
+        if not selection:
+            return
+        item = self.browser_rows.get(selection[0])
+        if item:
+            self._set_text(self.browser_details, json.dumps(item, indent=2, ensure_ascii=False))
+
+    def _browser_item_open(self, _event: object | None = None) -> None:
+        selection = self.browser_tree.selection()
+        if not selection:
+            return
+        item = self.browser_rows.get(selection[0])
+        if not item or item.get("kind") != "mediaCollection":
+            return
+        session = self.browser_contexts.get(self.browser_account_var.get())
+        if not session:
+            return
+        object_id = str(item.get("id", ""))
+        if not object_id:
+            return
+        title = str(item.get("title", object_id))
+        from_content = item.get("source_transport") == "content"
+        self._run_task(
+            f"Browsing {title}…",
+            lambda: session.browse(object_id, 0, 100, from_content_page=from_content),
+            lambda page: self._browser_page_complete(object_id, title, from_content, page),
+        )
+
+    def browser_back(self) -> None:
+        if len(self.browser_stack) > 1:
+            self.browser_stack.pop()
+            self._render_browser_page()
+
+    def browser_refresh(self) -> None:
+        if not self.browser_stack:
+            self._browse_root()
+            return
+        session = self.browser_contexts.get(self.browser_account_var.get())
+        if not session:
+            return
+        object_id, title, from_content, page_index, _page = self.browser_stack[-1]
+        self._run_task(
+            f"Refreshing {title}…",
+            lambda: session.browse(object_id, page_index, 100, from_content_page=from_content),
+            self._browser_refresh_complete,
+        )
+
+    def _browser_refresh_complete(self, page: dict[str, Any]) -> None:
+        object_id, title, from_content, _page_index, _old_page = self.browser_stack[-1]
+        self.browser_stack[-1] = (
+            object_id,
+            title,
+            from_content,
+            int(page.get("index", 0) or 0),
+            page,
+        )
+        self._render_browser_page()
+
+    def _browser_change_page(self, page_index: int) -> None:
+        if not self.browser_stack:
+            return
+        session = self.browser_contexts.get(self.browser_account_var.get())
+        if not session:
+            return
+        object_id, title, from_content, _current_index, page = self.browser_stack[-1]
+        if page.get("transport") == "content":
+            return
+        target = max(0, page_index)
+        self._run_task(
+            f"Loading {title} page…",
+            lambda: session.browse(object_id, target, 100, from_content_page=from_content),
+            self._browser_refresh_complete,
+        )
+
+    def browser_previous(self) -> None:
+        if self.browser_stack:
+            self._browser_change_page(self.browser_stack[-1][3] - 100)
+
+    def browser_next(self) -> None:
+        if not self.browser_stack:
+            return
+        _object_id, _title, _from_content, page_index, page = self.browser_stack[-1]
+        items = page.get("items", [])
+        item_count = len(items) if isinstance(items, list) else 0
+        total = int(page.get("total", item_count) or 0)
+        if page_index + item_count < total:
+            self._browser_change_page(page_index + max(1, item_count))
 
     def _render_services(self) -> None:
         for item in self.services_tree.get_children():

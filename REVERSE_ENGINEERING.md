@@ -291,7 +291,7 @@ Apple's `https://sonos-music.apple.com/browse/v1` receives:
 
 ```text
 Authorization: Bearer <current in-process account token>
-X-Sonos-Device-Id: <controller MachineIdentifier>
+X-Sonos-Device-Id: <household ID>_<account UID in eight lowercase hex digits>
 Accept-Language: <account language>
 X-Sonos-Context-TimeZone: <zone>                 when capability bit 16 is set
 X-Sonos-Context-ContentFiltering: explicit       when enabled and supported
@@ -302,8 +302,19 @@ It does **not** use `X-Sonos-SMAPI-Auth`; that aggregate account envelope belong
 to the controller's cross-service content search path. On HTTP 401,
 `SCContentSessionBrowse::FUN_100247cb0` invokes `FUN_100e24af0`, which constructs
 the ordinary `refreshAuthToken` operation, updates the controller's in-memory
-account token, and retries the provider URL once. `content_browse()` now mirrors
-that header selection and retry.
+account token, and retries the provider URL once. The exact refresh constructor
+passes a null HTTP-Bearer argument while putting the old token/key in the SOAP
+`loginToken`. `content_browse()` and `SmapiClient.refresh_auth_token()` now mirror
+that split.
+
+The home-page request is only half of the desktop chooser. An official desktop
+log records root object `0` going through `SCContentSession`, followed by a
+selection from that JSON page going through ordinary SOAP `getMetadata`. Before
+the SOAP call, the controller wraps the provider object ID with an eight-hex UI
+discriminator and percent-encodes the provider ID. Two observed examples are
+Apple `00081024recommendation%3a...` and Amazon
+`10fe2064catalog%2fplaylists...`. `DesktopBrowseSession` now implements this
+hybrid choice; it does not invent REST child query parameters.
 
 The Play:1 firmware independently establishes the playback boundary. Ordinary
 `getMetadata`, `search`, and `getMediaMetadata` calls use the Bearer account token
@@ -352,22 +363,27 @@ The independent implementation has verified:
 - exact per-account selection when a service has multiple accounts;
 - the bit-3 `refreshAuthToken` construction used by Sonos Radio.
 
-The current legacy-SMAPI matrix is 11 successful account probes out of 14. The two
-Pandora records return `Client.AuthTokenExpired` / “Failed to reauth device id”
-without replacement data, and Apple's legacy SOAP `getMetadata` route returns
-`InvalidTokenException`. Apple's manifest-driven content route is different: a
+The current desktop-chooser matrix is 12 successful account roots out of 14. The
+two Pandora records return `Client.AuthTokenExpired` / “Failed to reauth device
+id” without replacement data. Apple's legacy SOAP `getMetadata` route returns
+`InvalidTokenException`, but it is no longer used for the account root. Apple's
+manifest-driven content route is different: a
 live `GET https://sonos-music.apple.com/browse/v1` using the `Token0` exported in
 `ThirdPartyMediaServersX` as an HTTP Bearer credential returned HTTP 200 and the
 authenticated account's Listen Now root, Library, recommendations, and radio
 sections. This proves the household credential is valid for modern Apple browse;
 it does not make that token valid for Apple's legacy SOAP browse operation.
 
-The manifest endpoint's root request is proven, but the child-page contract is
-not. Supplying a guessed `page=<objectId>` query returned the root document again,
-so `content_browse()` deliberately rejects non-root IDs rather than presenting a
-guess as successful navigation. Sonos Radio refreshes successfully but its root
-`getMetadataResponse` is currently `xsi:nil` (and omits the `xsi` namespace
-declaration), which the browser tolerates as an empty result.
+The Apple child contract is now established from the desktop log, not a guessed
+REST parameter: `00081024` plus the percent-encoded provider object ID is sent to
+SOAP `getMetadata`. A live request built that way still receives Apple's
+`AuthTokenExpired / InvalidTokenException`, as does `refreshAuthToken`, while the
+same stored token continues to return the authenticated REST home page. Apple's
+`getAppLink` response to the Windows desktop reports
+`DesktopNotSupportedMessage`, so renewal must be completed through a supported
+Sonos client. This is provider/account state after an exact native request, not a
+remaining transport-selection difference. Sonos Radio and SiriusXM roots also
+use their advertised content endpoints successfully.
 
 Run `python3 smapi_browser.py --probe-all` for a fresh per-account result. It does
 not print token/key values.

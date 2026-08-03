@@ -33,6 +33,10 @@ SOAP_ENV = "http://schemas.xmlsoap.org/soap/envelope/"
 SMAPI_NS = "http://www.sonos.com/Services/1.1"
 SYSTEM_PROPERTIES = "urn:schemas-upnp-org:service:SystemProperties:1"
 MUSIC_SERVICES = "urn:schemas-upnp-org:service:MusicServices:1"
+DESKTOP_USER_AGENT = (
+    "Linux UPnP/1.0 Sonos/90.0-77070 "
+    "(WDCR:Microsoft Windows NT 10.0.19045 64-bit)"
+)
 
 ET.register_namespace("s", SOAP_ENV)
 
@@ -257,6 +261,11 @@ class Account:
         return int(match.group(1), 16)
 
 
+def account_content_device_id(household_id: str, account: Account) -> str:
+    """Build the per-account device identity used by native content sessions."""
+    return f"{household_id}_{account.account_uid:08x}"
+
+
 @dataclass(frozen=True)
 class Service:
     service_id: int
@@ -448,6 +457,7 @@ class SmapiClient:
         account: Account | None = None,
         *,
         credential_mode: str = "normal",
+        bearer_token: str | None = None,
     ) -> ET.Element:
         if urllib.parse.urlparse(self.service.uri).scheme.lower() != "https":
             raise RuntimeError(f"SMAPI endpoint must use HTTPS: {self.service.uri}")
@@ -457,11 +467,15 @@ class SmapiClient:
             "Soapaction": f'"{SMAPI_NS}#{action}"',
             "Accept-Language": "en-US",
             "X-Sonos-Controller-ID": self.controller_id,
-            "X-Sonos-Device-Id": self.host_device_id,
+            "User-Agent": DESKTOP_USER_AGENT,
         }
         current = account or self.account
-        if self.service.capabilities & 8 and current.token:
-            headers["Authorization"] = f"Bearer {current.token}"
+        # The native refreshAuthToken constructor explicitly passes a null
+        # bearer value. Other SMAPI operations pass the active account token
+        # when capability bit 3 requests HTTP bearer authentication.
+        active_bearer = current.token if bearer_token is None else bearer_token
+        if credential_mode != "refresh" and self.service.capabilities & 8 and active_bearer:
+            headers["Authorization"] = f"Bearer {active_bearer}"
         request = urllib.request.Request(
             self.service.uri,
             data=payload,
@@ -567,7 +581,12 @@ class SmapiClient:
                 "The Sonos household stores needs_reauth instead of a refreshable token",
                 0,
             )
-        root = self._request("refreshAuthToken", {}, credential_mode="refresh")
+        root = self._request(
+            "refreshAuthToken",
+            {},
+            credential_mode="refresh",
+            bearer_token="",
+        )
         results = descendants(root, "refreshAuthTokenResult")
         result = results[0] if results else root
         token = child_text(result, "authToken")
@@ -818,6 +837,8 @@ def content_browse_headers(
     account: Account,
     device_id: str,
     *,
+    controller_id: str | None = None,
+    correlation_id: str | None = None,
     time_zone: str | None = None,
     explicit_content: bool = False,
     group_capability: str | None = None,
@@ -829,10 +850,14 @@ def content_browse_headers(
     credentials, matching the desktop core's FUN_100247e60 header builder.
     """
     headers = {
-        "Accept": "application/json",
         "Accept-Language": "en-US",
         "X-Sonos-Device-Id": device_id,
+        "X-Sonos-Corr-Id": correlation_id or str(uuid.uuid4()),
+        "User-Agent": DESKTOP_USER_AGENT,
+        "Connection": "keep-alive",
     }
+    if controller_id:
+        headers["X-Sonos-Controller-ID"] = controller_id
     if account.token:
         headers["Authorization"] = f"Bearer {account.token}"
     if group_capability:
@@ -854,6 +879,7 @@ def content_browse(
     explicit_content: bool = False,
     refresh_client: SmapiClient | None = None,
     group_capability: str | None = None,
+    controller_id: str | None = None,
 ) -> dict[str, Any]:
     """Browse a manifest endpoint using the desktop core's authenticated REST transport.
 
@@ -876,6 +902,7 @@ def content_browse(
                 service,
                 current,
                 device_id,
+                controller_id=controller_id,
                 time_zone=time_zone,
                 explicit_content=explicit_content,
                 group_capability=group_capability,
@@ -907,6 +934,144 @@ def content_browse(
         raise ContentBrowseFault(service, "browse response root was not an object", status)
     return page
 
+
+# The desktop's UI object wrapper prepends this provider-specific eight-hex
+# discriminator before handing a modern content-page object to legacy SMAPI.
+# These values are not guessed: both occur in the official desktop log for
+# selections made from manifest content pages.
+CONTENT_OBJECT_PREFIXES = {
+    204: "00081024",  # Apple Music
+    201: "10fe2064",  # Amazon Music
+}
+
+
+def _lower_percent_escapes(value: str) -> str:
+    return re.sub(r"%[0-9A-F]{2}", lambda match: match.group(0).lower(), value)
+
+
+def desktop_content_object_id(service: Service, object_id: str) -> str:
+    """Encode a manifest-page selection exactly as the desktop passes it to SMAPI."""
+    if re.match(r"^[0-9a-fA-F]{8}", object_id):
+        return object_id
+    prefix = CONTENT_OBJECT_PREFIXES.get(service.service_id)
+    if not prefix:
+        raise ContentBrowseFault(
+            service,
+            "desktop child-object discriminator has not been established for this service",
+        )
+    encoded = urllib.parse.quote(object_id, safe="")
+    return prefix + _lower_percent_escapes(encoded)
+
+
+def content_page_items(page: dict[str, Any]) -> list[dict[str, Any]]:
+    """Flatten a modern multi-view root into rows while preserving view labels."""
+    rows: list[dict[str, Any]] = []
+    views = page.get("views", [])
+    if not isinstance(views, list):
+        return rows
+    for view in views:
+        if not isinstance(view, dict):
+            continue
+        view_content = view.get("content", {})
+        view_container = view_content.get("container", {}) if isinstance(view_content, dict) else {}
+        section = view_container.get("name", "") if isinstance(view_container, dict) else ""
+        items = view.get("items", [])
+        if not isinstance(items, list):
+            continue
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            identity = item.get("id", {})
+            content = item.get("content", {})
+            container = content.get("container", {}) if isinstance(content, dict) else {}
+            if not isinstance(identity, dict) or not isinstance(container, dict):
+                continue
+            object_id = identity.get("objectId", "")
+            if not isinstance(object_id, str) or not object_id:
+                continue
+            artist = container.get("artist", {})
+            artist_name = artist.get("name", "") if isinstance(artist, dict) else ""
+            rows.append(
+                {
+                    "kind": "mediaCollection",
+                    "id": object_id,
+                    "title": container.get("name", object_id),
+                    "item_type": container.get("type", "container"),
+                    "artist": artist_name,
+                    "album_art_uri": container.get("imageUrl", ""),
+                    "section": section,
+                    "display_type": item.get("displayType", ""),
+                    "source_transport": "content",
+                }
+            )
+    return rows
+
+
+class DesktopBrowseSession:
+    """The official controller's transport chooser for one service account.
+
+    A service with a manifest browse endpoint gets its home page from that
+    authenticated JSON endpoint. Selecting a returned object switches to the
+    ordinary SMAPI getMetadata operation with the desktop UI-object encoding.
+    Services without a browse endpoint use SMAPI from the root onward.
+    """
+
+    def __init__(self, client: SmapiClient, *, content_device_id: str | None = None) -> None:
+        self.client = client
+        self.content_endpoint = ""
+        if client.service.manifest_uri:
+            try:
+                self.content_endpoint = service_content_endpoint(client.service, "browse")
+            except ContentBrowseFault:
+                self.content_endpoint = ""
+        self.content_device_id = content_device_id or client.host_device_id
+        if self.content_endpoint and content_device_id is None:
+            self.content_device_id = account_content_device_id(
+                client.household_id,
+                client.account,
+            )
+
+    @property
+    def root_transport(self) -> str:
+        return "content" if self.content_endpoint else "smapi"
+
+    def browse(
+        self,
+        object_id: str = "root",
+        index: int = 0,
+        count: int = 100,
+        *,
+        from_content_page: bool = False,
+    ) -> dict[str, Any]:
+        if object_id in {"", "root"} and self.content_endpoint:
+            page = content_browse(
+                self.client.service,
+                self.client.account,
+                self.content_device_id,
+                time_zone=self.client.time_zone,
+                explicit_content=self.client.explicit_content,
+                refresh_client=self.client if self.client.allow_credential_refresh else None,
+                controller_id=self.client.controller_id,
+            )
+            items = content_page_items(page)
+            return {
+                "index": 0,
+                "count": len(items),
+                "total": len(items),
+                "items": items,
+                "transport": "content",
+                "endpoint": self.content_endpoint,
+                "raw_page": page,
+            }
+        smapi_id = (
+            desktop_content_object_id(self.client.service, object_id)
+            if from_content_page
+            else object_id
+        )
+        page = self.client.get_metadata(smapi_id, index, count)
+        page.update(transport="smapi", requested_id=smapi_id)
+        return page
+
 def inventory(host: str, household_id: str) -> tuple[dict[int, Service], list[Account]]:
     payload = capture_account_payload(host, household_id)
     return parse_services(host), parse_accounts(payload)
@@ -917,13 +1082,13 @@ def account_label(service: Service, account: Account) -> str:
     return f"{service.name} [serial {account.serial}]{suffix}"
 
 
-def interactive_browse(client: SmapiClient) -> None:
+def interactive_browse(session: DesktopBrowseSession) -> None:
     """Small terminal navigator whose stack mirrors desktop container browsing."""
     page_size = 100
-    stack: list[tuple[str, str, int]] = [("root", client.service.name, 0)]
+    stack: list[tuple[str, str, int, bool]] = [("root", session.client.service.name, 0, False)]
     while stack:
-        object_id, title, page_index = stack[-1]
-        page = client.get_metadata(object_id, page_index, page_size)
+        object_id, title, page_index, from_content = stack[-1]
+        page = session.browse(object_id, page_index, page_size, from_content_page=from_content)
         items = page["items"]
         first = page_index + 1 if items else 0
         last = page_index + len(items)
@@ -940,21 +1105,28 @@ def interactive_browse(client: SmapiClient) -> None:
             continue
         if choice.lower() == "n":
             if page_index + len(items) < page["total"]:
-                stack[-1] = (object_id, title, page_index + max(1, len(items)))
+                stack[-1] = (object_id, title, page_index + max(1, len(items)), from_content)
             continue
         if choice.lower() == "p":
             if page_index > 0:
-                stack[-1] = (object_id, title, max(0, page_index - page_size))
+                stack[-1] = (object_id, title, max(0, page_index - page_size), from_content)
             continue
         if not choice.isdigit() or not 1 <= int(choice) <= len(items):
             continue
         selected = items[int(choice) - 1]
         selected_id = str(selected.get("id", ""))
         if selected.get("kind") == "mediaCollection":
-            stack.append((selected_id, str(selected.get("title", selected_id)), 0))
+            stack.append(
+                (
+                    selected_id,
+                    str(selected.get("title", selected_id)),
+                    0,
+                    selected.get("source_transport") == "content",
+                )
+            )
         else:
             try:
-                detail = client.get_media_metadata(selected_id)
+                detail = session.client.get_media_metadata(selected_id)
             except SmapiFault as fault:
                 combined = f"{fault.code} {fault.message}".lower()
                 if "not supported" not in combined and "serviceunknown" not in combined:
@@ -1023,8 +1195,15 @@ def main() -> None:
                 "auth": service.auth,
             }
             try:
-                result = client.get_metadata("root", 0, 1)
-                row.update(status="ok", root_total=result["total"])
+                session = DesktopBrowseSession(client)
+                result = session.browse("root", 0, 1)
+                row.update(
+                    status="ok",
+                    root_total=result["total"],
+                    transport=result["transport"],
+                )
+                if result.get("endpoint"):
+                    row["endpoint"] = result["endpoint"]
             except SmapiFault as fault:
                 row.update(
                     status="unavailable",
@@ -1072,26 +1251,25 @@ def main() -> None:
         print(json.dumps(service_search_categories(service), indent=2, ensure_ascii=False))
         return
     if args.content_browse:
-        device_id = args.device_id or host_device_id(host)
-        refresh_client = None
-        if args.refresh_credentials:
-            refresh_client = SmapiClient(
-                service,
-                account,
-                household_id,
-                player_device_id(host),
-                player_zone_id(host),
-                host,
-                host_device_id=device_id,
-                allow_credential_refresh=True,
-            )
+        device_id = args.device_id or account_content_device_id(household_id, account)
+        content_client = SmapiClient(
+            service,
+            account,
+            household_id,
+            player_device_id(host),
+            player_zone_id(host),
+            host,
+            host_device_id=device_id,
+            allow_credential_refresh=args.refresh_credentials,
+        )
         page = content_browse(
             service,
             account,
             device_id,
             args.id,
             time_zone=local_time_zone(),
-            refresh_client=refresh_client,
+            refresh_client=content_client if args.refresh_credentials else None,
+            controller_id=content_client.controller_id,
         )
         print(json.dumps({"account": account_label(service, account), "container_id": args.id, **page}, indent=2, ensure_ascii=False))
         return
@@ -1106,7 +1284,7 @@ def main() -> None:
         allow_credential_refresh=args.refresh_credentials,
     )
     if args.interactive:
-        interactive_browse(client)
+        interactive_browse(DesktopBrowseSession(client))
         return
     if args.media_metadata:
         result = client.get_media_metadata(args.id)
@@ -1129,7 +1307,10 @@ def main() -> None:
             )
         )
         return
-    result = client.get_metadata(args.id, args.index, args.count, args.recursive)
+    if args.id in {"", "root"} and not args.recursive:
+        result = DesktopBrowseSession(client).browse(args.id, args.index, args.count)
+    else:
+        result = client.get_metadata(args.id, args.index, args.count, args.recursive)
     output = {
         "account": account_label(service, account),
         "container_id": args.id,

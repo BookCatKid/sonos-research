@@ -7,15 +7,20 @@ from unittest.mock import patch
 
 from smapi_browser import (
     Account,
+    DESKTOP_USER_AGENT,
+    DesktopBrowseSession,
     LocalSoapFault,
     SOAP_ENV,
     SMAPI_NS,
     Service,
     SmapiClient,
     SmapiFault,
+    account_content_device_id,
     content_auth_header,
     content_browse,
     content_browse_headers,
+    content_page_items,
+    desktop_content_object_id,
     descendants,
     element_value,
     host_device_id,
@@ -143,6 +148,39 @@ class EnvelopeTests(unittest.TestCase):
 
 
 class ContentTransportTests(unittest.TestCase):
+    def test_content_device_identity_uses_account_uid(self) -> None:
+        self.assertEqual(
+            account_content_device_id("Sonos_household", account()),
+            "Sonos_household_00000009",
+        )
+
+    def test_desktop_content_id_uses_observed_apple_wrapper(self) -> None:
+        apple = Service(204, "Apple Music", "https://example.invalid", "AppLink", 0, {})
+        self.assertEqual(
+            desktop_content_object_id(apple, "recommendation:AbC/1"),
+            "00081024recommendation%3aAbC%2f1",
+        )
+
+    def test_content_views_are_flattened_with_section_and_transport(self) -> None:
+        rows = content_page_items(
+            {
+                "views": [
+                    {
+                        "content": {"container": {"name": "Library"}},
+                        "items": [
+                            {
+                                "id": {"objectId": "libraryfolder:f.2"},
+                                "content": {"container": {"name": "Albums", "type": "container"}},
+                            }
+                        ],
+                    }
+                ]
+            }
+        )
+        self.assertEqual(rows[0]["section"], "Library")
+        self.assertEqual(rows[0]["id"], "libraryfolder:f.2")
+        self.assertEqual(rows[0]["source_transport"], "content")
+
     def test_host_identity_prefers_configured_machine_identifier(self) -> None:
         with patch.dict("os.environ", {"SONOS_HOST_DEVICE_ID": "machine-id"}):
             self.assertEqual(host_device_id("192.0.2.1"), "machine-id")
@@ -159,12 +197,17 @@ class ContentTransportTests(unittest.TestCase):
             service("AppLink", (1 << 16) | (1 << 21)),
             account(),
             "device-id",
+            controller_id="controller-id",
+            correlation_id="correlation-id",
             time_zone="America/Toronto",
             explicit_content=True,
         )
         self.assertEqual(headers["Authorization"], "Bearer token")
         self.assertNotIn("X-Sonos-SMAPI-Auth", headers)
         self.assertEqual(headers["X-Sonos-Device-Id"], "device-id")
+        self.assertEqual(headers["X-Sonos-Controller-ID"], "controller-id")
+        self.assertEqual(headers["X-Sonos-Corr-Id"], "correlation-id")
+        self.assertEqual(headers["User-Agent"], DESKTOP_USER_AGENT)
         self.assertEqual(headers["X-Sonos-Context-TimeZone"], "America/Toronto")
         self.assertEqual(headers["X-Sonos-Context-ContentFiltering"], "explicit")
 
@@ -250,9 +293,38 @@ class ProtocolFlowTests(unittest.TestCase):
         request = opened.call_args.args[0]
         self.assertEqual(request.get_header("Authorization"), "Bearer token")
         self.assertEqual(request.get_header("X-sonos-controller-id"), "controller-id")
-        self.assertEqual(request.get_header("X-sonos-device-id"), "host-device-id")
+        self.assertIsNone(request.get_header("X-sonos-device-id"))
+        self.assertEqual(request.get_header("User-agent"), DESKTOP_USER_AGENT)
         envelope = ET.fromstring(request.data)
         self.assertEqual(descendants(envelope, "deviceId")[0].text, "device-id")
+
+    def test_explicit_refresh_omits_http_bearer_like_desktop(self) -> None:
+        instance = client("AppLink", 8)
+
+        class Response:
+            status = 200
+            headers = {}
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *args):
+                return None
+
+            def read(self) -> bytes:
+                return (
+                    f'<refreshAuthTokenResponse xmlns="{SMAPI_NS}"><refreshAuthTokenResult>'
+                    "<authToken>new-token</authToken><privateKey>new-key</privateKey>"
+                    "</refreshAuthTokenResult></refreshAuthTokenResponse>"
+                ).encode()
+
+        with patch("smapi_browser.urllib.request.urlopen", return_value=Response()) as opened:
+            instance.refresh_auth_token()
+        request = opened.call_args.args[0]
+        self.assertIsNone(request.get_header("Authorization"))
+        envelope = ET.fromstring(request.data)
+        self.assertEqual(descendants(envelope, "token")[0].text, "token")
+        self.assertEqual(descendants(envelope, "key")[0].text, "key")
 
     def test_get_session_id_is_cached_and_inserted(self) -> None:
         instance = client("DeviceLink", 8)

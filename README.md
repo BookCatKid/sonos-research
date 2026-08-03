@@ -12,6 +12,12 @@ Use **Run all** to discover players, fetch the service catalog, subscribe to the
 household event, and decode its configured account instances. The GUI redacts
 credentials until **Reveal credential values locally** is enabled.
 
+The **Browse music** tab uses the same transport chooser as the desktop app:
+manifest-backed services load their home page through the modern authenticated
+content endpoint, while ordinary services use SMAPI. Double-clicking an item
+returned by a modern home page switches to the desktop's encoded SMAPI child
+request. The tab shows the transport used for every page.
+
 The currently selected pyenv Python on this Mac lacks `_tkinter`; use the system
 Python command above for the GUI. The command-line decoder works with either
 interpreter.
@@ -36,9 +42,6 @@ snapshot, selects the account-specific credentials, and talks directly to the
 service's SMAPI endpoint:
 
 ```sh
-# Use the desktop controller's persistent host identity for cloud-backed services
-export SONOS_HOST_DEVICE_ID="<your Sonos MachineIdentifier>"
-
 # Account inventory and current root-browse health
 python3 smapi_browser.py --list
 python3 smapi_browser.py --probe-all
@@ -46,7 +49,7 @@ python3 smapi_browser.py --probe-all
 # Opt into the desktop-style process-local refresh and one retry when needed.
 python3 smapi_browser.py --probe-all --refresh-credentials
 
-# Browse a root or a returned container ID
+# Browse a root with the desktop transport chooser, or a returned SMAPI container ID
 python3 smapi_browser.py --service-id 256 --id root
 python3 smapi_browser.py --service-id 256 --id R1-mediaCollection
 
