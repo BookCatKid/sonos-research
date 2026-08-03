@@ -602,9 +602,12 @@ class SmapiClient:
         if self.service.capabilities & 8:
             return self.refresh_auth_token()
         replacement = self._replacement_credentials(fault.detail)
-        if not replacement:
-            raise fault
-        return self._accept_replacement(*replacement)
+        if replacement:
+            return self._accept_replacement(*replacement)
+        # Some current providers advertise the embedded-replacement branch but
+        # return a plain Token Expired fault. Their explicit refresh operation
+        # is still available; Sonos Radio is a live example.
+        return self.refresh_auth_token()
 
     @staticmethod
     def _is_expired_fault(fault: SmapiFault) -> bool:
@@ -700,6 +703,10 @@ class SmapiClient:
             record = element_value(node)
             assert isinstance(record, dict)
             record["kind"] = kind
+            # Modern content JSON and legacy SMAPI use different spellings for
+            # the same artwork field. Keep the provider response intact while
+            # exposing one key to the GUI at every browse depth.
+            record["album_art_uri"] = record.get("albumArtURI", "")
             items.append(record)
         return {
             "index": int(child_text(result, "index", str(index))),
@@ -935,32 +942,16 @@ def content_browse(
     return page
 
 
-# The desktop's UI object wrapper prepends this provider-specific eight-hex
-# discriminator before handing a modern content-page object to legacy SMAPI.
-# These values are not guessed: both occur in the official desktop log for
-# selections made from manifest content pages.
-CONTENT_OBJECT_PREFIXES = {
-    204: "00081024",  # Apple Music
-    201: "10fe2064",  # Amazon Music
-}
-
-
-def _lower_percent_escapes(value: str) -> str:
-    return re.sub(r"%[0-9A-F]{2}", lambda match: match.group(0).lower(), value)
-
-
 def desktop_content_object_id(service: Service, object_id: str) -> str:
-    """Encode a manifest-page selection exactly as the desktop passes it to SMAPI."""
-    if re.match(r"^[0-9a-fA-F]{8}", object_id):
-        return object_id
-    prefix = CONTENT_OBJECT_PREFIXES.get(service.service_id)
-    if not prefix:
-        raise ContentBrowseFault(
-            service,
-            "desktop child-object discriminator has not been established for this service",
-        )
-    encoded = urllib.parse.quote(object_id, safe="")
-    return prefix + _lower_percent_escapes(encoded)
+    """Return the provider ID passed by the desktop's SMAPI browse delegate.
+
+    Eight-hex prefixes seen at the controller's browse/SCUri boundary are local
+    controller identifiers.  The native delegate removes that routing layer
+    before calling a provider.  The provider therefore receives the objectId
+    from the content response unchanged.
+    """
+    del service
+    return object_id
 
 
 def _content_item_row(item: dict[str, Any], section: str = "") -> dict[str, Any] | None:
@@ -1073,9 +1064,9 @@ class DesktopBrowseSession:
     """The official controller's transport chooser for one service account.
 
     A service with a manifest browse endpoint gets its home page from that
-    authenticated JSON endpoint. Selecting a returned object switches to the
-    ordinary SMAPI getMetadata operation with the desktop UI-object encoding.
-    Services without a browse endpoint use SMAPI from the root onward.
+    authenticated JSON endpoint. Selecting a returned provider object switches
+    to ordinary SMAPI getMetadata with the raw objectId. Services without a
+    browse endpoint use SMAPI from the root onward.
     """
 
     def __init__(self, client: SmapiClient, *, content_device_id: str | None = None) -> None:

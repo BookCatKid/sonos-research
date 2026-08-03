@@ -317,14 +317,16 @@ renders each item's provider `imageUrl` as album art.
 The home-page request is only half of the desktop chooser. An official desktop
 log records root object `0` going through `SCContentSession`, followed by a
 selection of an actual provider collection from the JSON data going through
-ordinary SOAP `getMetadata`. Before the SOAP call, the controller wraps the
-provider object ID with an eight-hex UI discriminator and percent-encodes the
-provider ID. Two observed examples are Apple
+ordinary SOAP `getMetadata`. Values such as Apple
 `00081024recommendation%3a...` and Amazon
-`10fe2064catalog%2fplaylists...`. `DesktopBrowseSession` implements this hybrid
-choice; it does not invent REST child query parameters. Query-string experiments
-against Apple's `/browse/v1` endpoint were ignored and returned the root again,
-while appending the child as a path returned HTTP 404.
+`10fe2064catalog%2fplaylists...` occur at the controller-local browse/SCUri
+boundary. They are routing identifiers, not provider object IDs. The native
+browse delegate removes that layer and passes the JSON `objectId` unchanged to
+SMAPI. Sending the local prefix to a provider was the cause of the SiriusXM
+"discriminator not established" failure. `DesktopBrowseSession` now preserves
+the raw provider ID. Query-string experiments against Apple's `/browse/v1`
+endpoint were ignored and returned the root again, while appending the child as
+a path returned HTTP 404.
 
 The Play:1 firmware independently establishes the playback boundary. Ordinary
 `getMetadata`, `search`, and `getMediaMetadata` calls use the Bearer account token
@@ -355,6 +357,13 @@ updates only its in-memory account snapshot, retries once, and never changes the
 speaker's stored account record. Without the option it reports expiration
 without accepting or requesting a replacement.
 
+Current Sonos Radio exposes one more compatibility case: its capabilities select
+the embedded-replacement branch, but some child requests return only a plain
+`Token Expired` fault. Its explicit `refreshAuthToken` operation succeeds. The
+desktop-compatible retry now uses an embedded replacement when present and falls
+back to that explicit operation when it is absent. This makes the Music, News &
+Talk, Sports, and Locations children browse successfully.
+
 Some account records contain the literal token `needs_reauth`. That is an account
 state, not an alternate authentication mechanism, and the provider cannot refresh
 it. Reauthorization is required before either the official app or this browser
@@ -384,9 +393,8 @@ authenticated account's Listen Now root, Library, recommendations, and radio
 sections. This proves the household credential is valid for modern Apple browse;
 it does not make that token valid for Apple's legacy SOAP browse operation.
 
-The Apple network child contract is established from the desktop log, not a
-guessed REST parameter: `00081024` plus the percent-encoded provider object ID is
-sent to SOAP `getMetadata`. A live request built that way still receives Apple's
+The Apple network child contract uses the raw provider object ID with SOAP
+`getMetadata`. A live request built that way still receives Apple's
 `AuthTokenExpired / InvalidTokenException`, as does `refreshAuthToken`, while the
 same stored token continues to return the authenticated REST home page. Apple's
 `getAppLink` response to the Windows desktop reports
@@ -394,9 +402,9 @@ same stored token continues to return the authenticated REST home page. Apple's
 Sonos client. This is provider/account state after an exact native request, not a
 remaining transport-selection difference. Sonos Radio and SiriusXM roots also
 use their advertised content endpoints successfully. Apple and SiriusXM now also
-open their embedded first-level sections locally. SiriusXM's discriminator for a
-network child request has not yet appeared in the available desktop evidence, so
-the implementation rejects that deeper request rather than manufacture an ID.
+open their embedded first-level sections locally. A live SiriusXM request for
+the raw `favorites:library-filter-view-all` object succeeds and returns the
+account's saved channel, confirming the deeper handoff.
 
 Run `python3 smapi_browser.py --probe-all` for a fresh per-account result. It does
 not print token/key values.

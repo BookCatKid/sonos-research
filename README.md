@@ -25,8 +25,9 @@ manifest-backed services load their home page through the modern authenticated
 content endpoint, while ordinary services use SMAPI. Modern home pages contain
 several views, so the GUI presents each view as one artwork-backed section row;
 opening that row displays the items already embedded in the response. Opening an
-actual provider collection then switches to the desktop's encoded SMAPI child
-request. The tab shows the transport used for every page.
+actual provider collection then switches to the desktop's SMAPI child request
+using the provider's original object ID. The tab shows the transport used for
+every page.
 
 The command-line decoder works with either interpreter.
 

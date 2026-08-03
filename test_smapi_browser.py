@@ -155,11 +155,11 @@ class ContentTransportTests(unittest.TestCase):
             "Sonos_household_00000009",
         )
 
-    def test_desktop_content_id_uses_observed_apple_wrapper(self) -> None:
+    def test_desktop_content_id_strips_no_provider_data(self) -> None:
         apple = Service(204, "Apple Music", "https://example.invalid", "AppLink", 0, {})
         self.assertEqual(
             desktop_content_object_id(apple, "recommendation:AbC/1"),
-            "00081024recommendation%3aAbC%2f1",
+            "recommendation:AbC/1",
         )
 
     def test_content_views_are_flattened_with_section_and_transport(self) -> None:
@@ -424,15 +424,15 @@ class ProtocolFlowTests(unittest.TestCase):
         self.assertEqual((instance.account.token, instance.account.key), ("embedded-token", "embedded-key"))
         local_request.assert_not_called()
 
-    def test_missing_embedded_replacement_does_not_make_an_unsupported_refresh_call(self) -> None:
+    def test_missing_embedded_replacement_uses_explicit_refresh_fallback(self) -> None:
         instance = client("AppLink", allow_credential_refresh=True)
         fault = SmapiFault("Client.AuthTokenExpired", "expired without replacement", 500)
-        with patch.object(instance, "_request", side_effect=fault), patch.object(
+        success = ET.fromstring(f'<getMetadataResponse xmlns="{SMAPI_NS}"/>')
+        with patch.object(instance, "_request", side_effect=[fault, success]), patch.object(
             instance, "refresh_auth_token"
         ) as explicit_refresh:
-            with self.assertRaises(SmapiFault):
-                instance._request_with_refresh("getMetadata", {})
-        explicit_refresh.assert_not_called()
+            self.assertIs(instance._request_with_refresh("getMetadata", {}), success)
+        explicit_refresh.assert_called_once_with()
 
     def test_refresh_rejects_an_incomplete_replacement_pair(self) -> None:
         instance = client("AppLink")
@@ -551,6 +551,17 @@ class ParserTests(unittest.TestCase):
     def test_nested_metadata_is_not_discarded(self) -> None:
         root = ET.fromstring("<item><title>T</title><metadata><description>D</description></metadata></item>")
         self.assertEqual(element_value(root), {"title": "T", "metadata": {"description": "D"}})
+
+    def test_smapi_album_art_is_exposed_to_the_gui(self) -> None:
+        instance = client("Anonymous")
+        instance._request_with_refresh = lambda *args, **kwargs: ET.fromstring(  # type: ignore[method-assign]
+            f'<getMetadataResponse xmlns="{SMAPI_NS}"><getMetadataResult>'
+            '<index>0</index><count>1</count><total>1</total><mediaCollection>'
+            '<id>albums</id><title>Albums</title><albumArtURI>https://example.invalid/art.jpg</albumArtURI>'
+            '</mediaCollection></getMetadataResult></getMetadataResponse>'
+        )
+        item = instance.get_metadata("root")["items"][0]
+        self.assertEqual(item["album_art_uri"], "https://example.invalid/art.jpg")
 
 
 if __name__ == "__main__":
