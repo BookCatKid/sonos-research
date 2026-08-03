@@ -21,7 +21,9 @@ it is not an identifier. The encoded account type used by Sonos mutations is
 
 One household coordinator owns:
 
-- the selected reachable player and `R_TrialZPSerial` device ID;
+- the selected reachable player and its `R_TrialZPSerial` zone identity;
+- a persistent controller `MachineIdentifier` used as the cloud `deviceId` and
+  `X-Sonos-Device-Id` (configure it as `SONOS_HOST_DEVICE_ID`);
 - the `ListAvailableServices` descriptor catalog;
 - the latest decrypted `ThirdPartyMediaServersX` account snapshot;
 - one stable controller UUID for HTTP requests;

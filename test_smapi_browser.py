@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import unittest
 import xml.etree.ElementTree as ET
 from unittest.mock import patch
@@ -12,8 +13,12 @@ from smapi_browser import (
     Service,
     SmapiClient,
     SmapiFault,
+    content_auth_header,
+    content_browse,
+    content_browse_headers,
     descendants,
     element_value,
+    host_device_id,
     local_name,
     parse_accounts,
     redact_diagnostic,
@@ -137,6 +142,69 @@ class EnvelopeTests(unittest.TestCase):
         )
 
 
+class ContentTransportTests(unittest.TestCase):
+    def test_host_identity_prefers_configured_machine_identifier(self) -> None:
+        with patch.dict("os.environ", {"SONOS_HOST_DEVICE_ID": "machine-id"}):
+            self.assertEqual(host_device_id("192.0.2.1"), "machine-id")
+
+    def test_smapi_auth_header_keeps_account_identity_distinct(self) -> None:
+        value = json.loads(content_auth_header(service("AppLink", 8), account()))
+        self.assertEqual(value["accounts"][0]["type"], "TOKEN")
+        self.assertEqual(value["accounts"][0]["serviceId"], "42")
+        self.assertEqual(value["accounts"][0]["accountId"], account().udn)
+        self.assertEqual(value["accounts"][0]["value"], "token")
+
+    def test_provider_browse_uses_bearer_not_aggregate_auth(self) -> None:
+        headers = content_browse_headers(
+            service("AppLink", (1 << 16) | (1 << 21)),
+            account(),
+            "device-id",
+            time_zone="America/Toronto",
+            explicit_content=True,
+        )
+        self.assertEqual(headers["Authorization"], "Bearer token")
+        self.assertNotIn("X-Sonos-SMAPI-Auth", headers)
+        self.assertEqual(headers["X-Sonos-Device-Id"], "device-id")
+        self.assertEqual(headers["X-Sonos-Context-TimeZone"], "America/Toronto")
+        self.assertEqual(headers["X-Sonos-Context-ContentFiltering"], "explicit")
+
+    def test_provider_browse_refreshes_on_401_and_retries(self) -> None:
+        target = service("AppLink")
+        refresh = client("AppLink")
+        refreshed = account(token="new-token", key="new-key")
+
+        class Response:
+            status = 200
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *args):
+                return None
+
+            def read(self) -> bytes:
+                return b'{}'
+
+        failure = __import__("urllib.error").error.HTTPError(
+            "https://example.invalid/browse", 401, "Unauthorized", {}, None
+        )
+        with patch("smapi_browser.service_content_endpoint", return_value="https://example.invalid/browse"), patch(
+            "smapi_browser.urllib.request.urlopen", side_effect=[failure, Response()]
+        ) as opened, patch.object(refresh, "refresh_auth_token", return_value=refreshed) as refresh_token:
+            self.assertEqual(
+                content_browse(target, account(), "device-id", refresh_client=refresh),
+                {},
+            )
+        refresh_token.assert_called_once_with()
+        self.assertEqual(opened.call_count, 2)
+        second_request = opened.call_args_list[1].args[0]
+        self.assertEqual(second_request.get_header("Authorization"), "Bearer new-token")
+
+    def test_provider_browse_rejects_unproven_child_routing(self) -> None:
+        with self.assertRaisesRegex(RuntimeError, "child-page routing is not established"):
+            content_browse(service("AppLink"), account(), "device-id", "album:123")
+
+
 class ProtocolFlowTests(unittest.TestCase):
     def test_undeclared_xsi_nil_from_provider_is_tolerated(self) -> None:
         instance = client("Anonymous")
@@ -163,7 +231,7 @@ class ProtocolFlowTests(unittest.TestCase):
         self.assertTrue(descendants(root, "getMetadataResponse"))
 
     def test_bearer_header_and_controller_header_are_sent(self) -> None:
-        instance = client("AppLink", 8)
+        instance = client("AppLink", 8, host_device_id="host-device-id")
 
         class Response:
             status = 200
@@ -182,6 +250,9 @@ class ProtocolFlowTests(unittest.TestCase):
         request = opened.call_args.args[0]
         self.assertEqual(request.get_header("Authorization"), "Bearer token")
         self.assertEqual(request.get_header("X-sonos-controller-id"), "controller-id")
+        self.assertEqual(request.get_header("X-sonos-device-id"), "host-device-id")
+        envelope = ET.fromstring(request.data)
+        self.assertEqual(descendants(envelope, "deviceId")[0].text, "device-id")
 
     def test_get_session_id_is_cached_and_inserted(self) -> None:
         instance = client("DeviceLink", 8)

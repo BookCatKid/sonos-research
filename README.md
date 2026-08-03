@@ -36,6 +36,9 @@ snapshot, selects the account-specific credentials, and talks directly to the
 service's SMAPI endpoint:
 
 ```sh
+# Use the desktop controller's persistent host identity for cloud-backed services
+export SONOS_HOST_DEVICE_ID="<your Sonos MachineIdentifier>"
+
 # Account inventory and current root-browse health
 python3 smapi_browser.py --list
 python3 smapi_browser.py --probe-all

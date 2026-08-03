@@ -1,0 +1,24 @@
+import ghidra.app.script.GhidraScript;
+import ghidra.program.model.listing.Function;
+import ghidra.program.model.address.Address;
+import ghidra.app.decompiler.DecompInterface;
+import ghidra.app.decompiler.DecompileResults;
+import ghidra.util.task.ConsoleTaskMonitor;
+import java.io.File;
+import java.io.PrintWriter;
+
+public class Decomp248500 extends GhidraScript {
+    public void run() throws Exception {
+        Address ad = currentProgram.getAddressFactory().getAddress("100248500");
+        Function f = currentProgram.getFunctionManager().getFunctionAt(ad);
+        if (f == null) { println("NO FUNC"); return; }
+        DecompInterface ifc = new DecompInterface();
+        ifc.openProgram(currentProgram);
+        DecompileResults r = ifc.decompileFunction(f, 60, new ConsoleTaskMonitor());
+        File out = new File("/tmp/decomp-100248500.txt");
+        PrintWriter pw = new PrintWriter(out);
+        pw.println(r.getDecompiledFunction().getC());
+        pw.close();
+        println("wrote");
+    }
+}

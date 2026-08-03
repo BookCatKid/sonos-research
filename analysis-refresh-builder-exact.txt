@@ -1,0 +1,105 @@
+================================================================================
+Requested: 100e235a0
+Function: FUN_100e235a0
+
+void FUN_100e235a0(undefined8 *param_1,long param_2,char *param_3,char *param_4,char *param_5,
+                  undefined8 param_6,undefined8 param_7)
+
+{
+  undefined8 *puVar1;
+  undefined8 *puVar2;
+  undefined8 *puVar3;
+  undefined8 *puVar4;
+  char cVar5;
+  undefined8 uVar6;
+  long *plVar7;
+  undefined8 in_stack_ffffffffffffff68;
+  undefined4 uVar8;
+  undefined8 in_stack_ffffffffffffff70;
+  undefined4 uVar9;
+  
+  uVar8 = (undefined4)((ulong)in_stack_ffffffffffffff68 >> 0x20);
+  uVar9 = (undefined4)((ulong)in_stack_ffffffffffffff70 >> 0x20);
+  *param_1 = &PTR_FUN_1014f0498;
+  param_1[0x1b] = &PTR_FUN_1014f0528;
+  param_1[0x9d] = &PTR_FUN_1014f05a0;
+  uVar6 = FUN_100ebd260(param_2 + 0x20,param_1 + 0x2415,0x80);
+  FUN_100e306e0(param_1,uVar6,"http://www.sonos.com/Services/1.1","refreshAuthToken",0,20000,
+                CONCAT44(uVar8,10000),CONCAT44(uVar9,1),param_1 + 0x2752);
+  *param_1 = &PTR_FUN_1014f0498;
+  param_1[0x1b] = &PTR_FUN_1014f0528;
+  param_1[0x9d] = &PTR_FUN_1014f05a0;
+  puVar1 = param_1 + 0x1bd1;
+  FUN_100ec9bd0(puVar1,"http://www.sonos.com/Services/1.1","credentials");
+  FUN_100ec9bd0(param_1 + 0x1e5e,"http://www.sonos.com/Services/1.1","context");
+  FUN_100ec8fe0(param_1 + 0x20e7);
+  *(undefined1 *)(param_1 + 0x1e5a) = 0;
+  puVar2 = param_1 + 0x227e;
+  FUN_100ec8fe0(puVar2);
+  *(undefined1 *)(param_1 + 0x2652) = 0;
+  *(undefined1 *)((long)param_1 + 0x132a9) = 0;
+  *(undefined4 *)((long)param_1 + 0x132ec) = 0;
+  puVar3 = param_1 + 0x265e;
+  FUN_100eccfd0();
+  puVar4 = param_1 + 0x26d8;
+  FUN_100eccfd0();
+  param_1[0x2752] = &PTR_FUN_1014f08b8;
+  *(undefined4 *)(param_1 + 0x2753) = 0;
+  *(undefined1 *)((long)param_1 + 0x13a9c) = 0;
+  *(undefined1 *)((long)param_1 + 0x13abc) = 0;
+  *(undefined1 *)((long)param_1 + 0x142bd) = 0;
+  *(undefined1 *)(param_1 + 0x2958) = 0;
+  *(undefined1 *)((long)param_1 + 0x14ad9) = 0;
+  *(undefined4 *)((long)param_1 + 0x14b1c) = 0;
+  *(undefined1 *)(param_1 + 0x2964) = 0;
+  *(undefined4 *)(param_1[0x164] + 8) = 1;
+  FUN_100e16ba0(param_1 + 0x1b,param_2,0,param_6,param_7,0,0,0);
+  plVar7 = (long *)FUN_100ec9db0(puVar1,"deviceId");
+  (**(code **)(*plVar7 + 0x20))(plVar7,&DAT_1015d2a00);
+  plVar7 = (long *)FUN_100ec9db0(puVar1,"deviceProvider");
+  (**(code **)(*plVar7 + 0x20))(plVar7,"Sonos");
+  if ((param_4 != (char *)0x0) && (*param_4 != '\0')) {
+    plVar7 = (long *)FUN_100ec92c0(puVar2,"token");
+    (**(code **)(*plVar7 + 0x20))(plVar7,param_4);
+  }
+  if ((param_5 != (char *)0x0) && (*param_5 != '\0')) {
+    plVar7 = (long *)FUN_100ec92c0(puVar2,"key");
+    (**(code **)(*plVar7 + 0x20))(plVar7,param_5);
+  }
+  if ((param_3 != (char *)0x0) && (*param_3 != '\0')) {
+    plVar7 = (long *)FUN_100ec92c0(puVar2,"householdId");
+    (**(code **)(*plVar7 + 0x20))(plVar7,param_3);
+  }
+  uVar6 = FUN_100ec9db0(puVar1,"loginToken");
+  FUN_100ec7da0(uVar6,puVar2);
+  FUN_100ecba60(param_1 + 0x1546,puVar1);
+  *(undefined4 *)(param_1 + 0x1bd2) = *(undefined4 *)(param_1 + 0x1547);
+  cVar5 = FUN_100e13330(param_1 + 0x1e5a,param_2);
+  if (cVar5 != '\0') {
+    FUN_100ecba60(param_1 + 0x1546,param_1 + 0x1e5e);
+    *(undefined4 *)(param_1 + 0x1e5f) = *(undefined4 *)(param_1 + 0x1547);
+  }
+  *(undefined1 *)(param_1 + 0x2425) = 0;
+  *(undefined1 *)((long)param_1 + 0x12929) = 0;
+  *(undefined1 *)((long)param_1 + 0x1312a) = 0;
+  *(undefined1 *)((long)param_1 + 0x1316b) = 0;
+  *(undefined1 *)((long)param_1 + 0x1326c) = 0;
+  uVar6 = FUN_100ecd220(puVar3,"http://www.sonos.com/Services/1.1|authToken");
+  FUN_100ec82e0(uVar6,param_1 + 0x2425,0x801);
+  uVar6 = FUN_100ecd220(puVar3,"http://www.sonos.com/Services/1.1|privateKey");
+  FUN_100ec82e0(uVar6,(long)param_1 + 0x12929,0x801);
+  uVar6 = FUN_100ecd220(puVar3,"http://www.sonos.com/Services/1.1|userInfo");
+  FUN_100ec8330(uVar6,puVar4);
+  uVar6 = FUN_100ecd220(puVar4,"http://www.sonos.com/Services/1.1|nickname");
+  FUN_100ec82e0(uVar6,(long)param_1 + 0x1312a,0x41);
+  uVar6 = FUN_100ecd220(puVar4,"http://www.sonos.com/Services/1.1|userIdHashCode");
+  FUN_100ec82e0(uVar6,(long)param_1 + 0x1316b,0x101);
+  uVar6 = FUN_100ecd220(puVar4,"http://www.sonos.com/Services/1.1|accountTier");
+  FUN_100ec82e0(uVar6,(long)param_1 + 0x1326c,0x21);
+  uVar6 = FUN_100eccee0(param_1 + 0x1899,"http://www.sonos.com/Services/1.1|refreshAuthTokenResult")
+  ;
+  FUN_100ec8330(uVar6,puVar3);
+  return;
+}
+
+

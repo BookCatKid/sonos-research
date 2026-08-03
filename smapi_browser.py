@@ -182,6 +182,24 @@ def player_zone_id(host: str) -> str:
     return (values[0].text or "").strip().removeprefix("uuid:")
 
 
+def host_device_id(host: str) -> str:
+    """Return the persistent controller identity used by Sonos cloud services.
+
+    This is deliberately distinct from ``R_TrialZPSerial``: the latter names a
+    reachable player, while the desktop controller sends its own stable host
+    identity in SMAPI credentials and modern content headers. HA deployments
+    should persist this value and may provide it through ``SONOS_HOST_DEVICE_ID``.
+    """
+    configured = os.environ.get("SONOS_HOST_DEVICE_ID", "").strip()
+    if configured:
+        return configured
+    # Keep the discovery fallback for callers that have not configured a
+    # persistent host identity yet. Modern content services should set
+    # SONOS_HOST_DEVICE_ID to the app's MachineIdentifier; legacy SMAPI calls
+    # use player_device_id() directly instead.
+    return player_device_id(host)
+
+
 def local_time_zone() -> str:
     configured = os.environ.get("TZ", "").strip()
     if configured:
@@ -328,6 +346,7 @@ class SmapiClient:
         zone_player_id: str,
         player_host: str,
         *,
+        host_device_id: str | None = None,
         controller_id: str | None = None,
         time_zone: str | None = None,
         explicit_content: bool = False,
@@ -337,6 +356,7 @@ class SmapiClient:
         self.account = account
         self.household_id = household_id
         self.device_id = device_id
+        self.host_device_id = host_device_id or device_id
         self.zone_player_id = zone_player_id
         self.player_host = player_host
         self.controller_id = controller_id or str(
@@ -437,6 +457,7 @@ class SmapiClient:
             "Soapaction": f'"{SMAPI_NS}#{action}"',
             "Accept-Language": "en-US",
             "X-Sonos-Controller-ID": self.controller_id,
+            "X-Sonos-Device-Id": self.host_device_id,
         }
         current = account or self.account
         if self.service.capabilities & 8 and current.token:
@@ -737,6 +758,155 @@ def service_search_categories(service: Service) -> list[dict[str, Any]]:
     return groups
 
 
+
+class ContentBrowseFault(RuntimeError):
+    """A manifest-driven content browse request failed or returned an unexpected page."""
+
+    def __init__(self, service: Service, message: str, http_status: int = 0) -> None:
+        self.service = service
+        self.http_status = http_status
+        super().__init__(f"{service.name}: {message}")
+
+
+def service_manifest(service: Service) -> dict[str, Any]:
+    """Fetch and decode the manifest advertised by ListAvailableServices."""
+    if not service.manifest_uri:
+        return {}
+    request = urllib.request.Request(
+        service.manifest_uri,
+        headers={"Accept": "application/json", "Accept-Language": "en-US"},
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=20) as response:
+            payload = response.read()
+    except urllib.error.HTTPError as error:
+        raise ContentBrowseFault(service, f"manifest HTTP {error.code}", error.code) from error
+    try:
+        manifest = json.loads(payload)
+    except (TypeError, json.JSONDecodeError) as error:
+        raise ContentBrowseFault(service, "manifest was not valid JSON") from error
+    if not isinstance(manifest, dict):
+        raise ContentBrowseFault(service, "manifest root was not an object")
+    return manifest
+
+
+def service_content_endpoint(service: Service, endpoint_type: str = "browse") -> str:
+    manifest = service_manifest(service)
+    endpoints = manifest.get("endpoints", [])
+    if isinstance(endpoints, list):
+        for endpoint in endpoints:
+            if isinstance(endpoint, dict) and endpoint.get("type") == endpoint_type:
+                uri = endpoint.get("uri")
+                if isinstance(uri, str) and uri:
+                    return uri
+    raise ContentBrowseFault(service, f"manifest has no {endpoint_type} endpoint")
+
+
+def content_auth_header(service: Service, account: Account) -> str:
+    """Build the aggregate-search X-Sonos-SMAPI-Auth envelope without logging it."""
+    value = {
+        "type": "TOKEN" if account.token else "SESSION",
+        "value": account.token,
+        "serviceId": str(service.service_id),
+        "accountId": account.udn,
+    }
+    return json.dumps({"accounts": [value]}, separators=(",", ":"))
+
+
+def content_browse_headers(
+    service: Service,
+    account: Account,
+    device_id: str,
+    *,
+    time_zone: str | None = None,
+    explicit_content: bool = False,
+    group_capability: str | None = None,
+) -> dict[str, str]:
+    """Build the headers used by the desktop SCContentSessionBrowse path.
+
+    Provider-owned browse endpoints do not use the aggregate-search
+    ``X-Sonos-SMAPI-Auth`` envelope.  AppLink accounts are sent as HTTPS Bearer
+    credentials, matching the desktop core's FUN_100247e60 header builder.
+    """
+    headers = {
+        "Accept": "application/json",
+        "Accept-Language": "en-US",
+        "X-Sonos-Device-Id": device_id,
+    }
+    if account.token:
+        headers["Authorization"] = f"Bearer {account.token}"
+    if group_capability:
+        headers["X-Sonos-GroupCapability"] = group_capability
+    if service.capabilities & (1 << 16) and time_zone:
+        headers["X-Sonos-Context-TimeZone"] = time_zone
+    if service.capabilities & (1 << 21) and explicit_content:
+        headers["X-Sonos-Context-ContentFiltering"] = "explicit"
+    return headers
+
+
+def content_browse(
+    service: Service,
+    account: Account,
+    device_id: str,
+    object_id: str = "root",
+    *,
+    time_zone: str | None = None,
+    explicit_content: bool = False,
+    refresh_client: SmapiClient | None = None,
+    group_capability: str | None = None,
+) -> dict[str, Any]:
+    """Browse a manifest endpoint using the desktop core's authenticated REST transport.
+
+    Modern services return their root page (including multiple views) from the
+    manifest URI. Child-page routing is provider-owned and is not inferred here;
+    callers must use legacy SMAPI for children until that provider's contract has
+    been established from controller code or a captured request.
+    """
+    if object_id not in {"", "root"}:
+        raise ContentBrowseFault(
+            service,
+            f"child-page routing is not established for object {object_id!r}",
+        )
+    endpoint = service_content_endpoint(service, "browse")
+    current = account
+    for attempt in range(2):
+        request = urllib.request.Request(
+            endpoint,
+            headers=content_browse_headers(
+                service,
+                current,
+                device_id,
+                time_zone=time_zone,
+                explicit_content=explicit_content,
+                group_capability=group_capability,
+            ),
+        )
+        try:
+            with urllib.request.urlopen(request, timeout=20) as response:
+                status = response.status
+                payload = response.read()
+        except urllib.error.HTTPError as error:
+            payload = error.read()
+            if error.code == 401 and attempt == 0 and refresh_client is not None:
+                # SCContentSessionBrowse treats HTTP 401 specially: it runs the
+                # account's explicit refreshAuthToken operation and retries the
+                # original provider URL once.
+                current = refresh_client.refresh_auth_token()
+                continue
+            raise ContentBrowseFault(service, f"browse HTTP {error.code}", error.code) from error
+        break
+    else:  # pragma: no cover - both loop exits are explicit above
+        raise ContentBrowseFault(service, "browse retry exhausted")
+    if status != 200:
+        raise ContentBrowseFault(service, f"browse HTTP {status}", status)
+    try:
+        page = json.loads(payload)
+    except (TypeError, json.JSONDecodeError) as error:
+        raise ContentBrowseFault(service, "browse response was not valid JSON", status) from error
+    if not isinstance(page, dict):
+        raise ContentBrowseFault(service, "browse response root was not an object", status)
+    return page
+
 def inventory(host: str, household_id: str) -> tuple[dict[int, Service], list[Account]]:
     payload = capture_account_payload(host, household_id)
     return parse_services(host), parse_accounts(payload)
@@ -796,6 +966,10 @@ def interactive_browse(client: SmapiClient) -> None:
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--host", help="Sonos player IP; otherwise use SSDP")
+    parser.add_argument(
+        "--device-id",
+        help="persistent Sonos controller MachineIdentifier (or SONOS_HOST_DEVICE_ID)",
+    )
     parser.add_argument("--list", action="store_true", help="list configured service accounts")
     parser.add_argument("--probe-all", action="store_true", help="test a one-item root browse for every account")
     parser.add_argument(
@@ -812,6 +986,7 @@ def main() -> None:
     parser.add_argument("--media-metadata", action="store_true", help="call getMediaMetadata for --id")
     parser.add_argument("--interactive", action="store_true", help="navigate containers in the terminal")
     parser.add_argument("--search-categories", action="store_true", help="show presentation-map search IDs")
+    parser.add_argument("--content-browse", action="store_true", help="browse a manifest-driven modern content endpoint")
     parser.add_argument("--search", metavar="TERM", help="run the SMAPI search operation")
     parser.add_argument("--search-id", help="mapped search category ID, such as artist or song")
     args = parser.parse_args()
@@ -837,6 +1012,7 @@ def main() -> None:
                 device_id,
                 zone_id,
                 host,
+                host_device_id=args.device_id or host_device_id(host),
                 allow_credential_refresh=args.refresh_credentials,
             )
             row: dict[str, Any] = {
@@ -895,6 +1071,30 @@ def main() -> None:
     if args.search_categories:
         print(json.dumps(service_search_categories(service), indent=2, ensure_ascii=False))
         return
+    if args.content_browse:
+        device_id = args.device_id or host_device_id(host)
+        refresh_client = None
+        if args.refresh_credentials:
+            refresh_client = SmapiClient(
+                service,
+                account,
+                household_id,
+                player_device_id(host),
+                player_zone_id(host),
+                host,
+                host_device_id=device_id,
+                allow_credential_refresh=True,
+            )
+        page = content_browse(
+            service,
+            account,
+            device_id,
+            args.id,
+            time_zone=local_time_zone(),
+            refresh_client=refresh_client,
+        )
+        print(json.dumps({"account": account_label(service, account), "container_id": args.id, **page}, indent=2, ensure_ascii=False))
+        return
     client = SmapiClient(
         service,
         account,
@@ -902,6 +1102,7 @@ def main() -> None:
         player_device_id(host),
         player_zone_id(host),
         host,
+        host_device_id=args.device_id or host_device_id(host),
         allow_credential_refresh=args.refresh_credentials,
     )
     if args.interactive:

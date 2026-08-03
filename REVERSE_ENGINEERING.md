@@ -34,6 +34,91 @@ desktop controller
 accounts configured in the household. `ThirdPartyMediaServersX` is the missing
 piece.
 
+## Exact desktop startup and discovery state machine
+
+The installed controller does not begin with a cloud login. On launch it monitors
+the active network adapter, resumes its LAN core when an IPv4 address becomes
+available, starts an active SSDP scanner, and initially places the zone-group
+manager in `SystemNotFound`. A successful discovery is then supposed to associate
+one discovered player with a household, subscribe to that player's
+`ZoneGroupTopology` service, and build the complete zone/group model from the
+topology event. Passive SSDP remains active afterward to notice player boot,
+address, and availability changes.
+
+The scanner implementation at `0x100ec0420` constructs this request:
+
+```text
+M-SEARCH * HTTP/1.1
+HOST: 239.255.255.250:1900
+MAN: "ssdp:discover"
+MX: 1
+ST: urn:schemas-upnp-org:device:ZonePlayer:1
+USER-AGENT: <controller UPnP user agent>
+X-RINCON-HOUSEHOLD: <household ID>   # present when restricting a rescan
+```
+
+It calls `getifaddrs`, selects every IPv4 interface that is up, multicast-capable,
+and not loopback, sets `IP_MULTICAST_IF` to that interface, and sends the request
+to `239.255.255.250:1900`. On broadcast-capable interfaces it also enables
+`SO_BROADCAST` and sends the same request to `255.255.255.255:1900`. The active
+scanner initializes a retry counter to three and schedules another send one second
+later until that counter is exhausted. Discovered records are retained according
+to their SSDP lifetime and aged out later; the controller does not equate one lost
+UDP response with a missing system.
+
+The join-existing wizard is a UI state machine around that scanner:
+
+```text
+legacy_join_existing.init
+  -> intro
+  -> firewall/elevation check
+  -> connecting + active SSDP scan
+  -> success, or timeout after 30 seconds
+```
+
+The 30 seconds is a wizard deadline, not a required speaker handshake. Once a
+player is found, normal connection proceeds through its advertised device
+description and `ZoneGroupTopology`; setup-specific product joining can additionally
+use UDP 6969 and button-press flows, but reconnecting to an already configured
+household does not require those operations.
+
+### Why the installed controller currently waits and sometimes fails
+
+A non-promiscuous launch capture and the controller logs isolate the current
+failure. The CrossOver Windows controller entered `Starting active SSDP scan` at
+19:11:26 and timed out exactly 30 seconds later. It first attempted the Windows
+firewall elevation COM path, which failed with `0x800401EA` and was reported as
+`Enable Firewall UAC prompt rejected by user`. During its claimed active-scan
+window, **zero Sonos M-SEARCH packets left the Mac interface**. A speaker's valid
+multicast and broadcast advertisements were visible on that interface during the
+same window, but the controller did not associate them.
+
+The native macOS controller reproduced the important half of the failure: it bound
+UDP ports 1900 and 6969, logged `Starting active SSDP scan`, and emitted no Sonos
+M-SEARCH packet. macOS's application firewall was disabled and its per-app query
+reported that incoming Sonos connections were permitted. By contrast, the local
+Python implementation sent the legacy request and succeeded 10 out of 10 times,
+finding a speaker in 102--317 ms. The speakers and LAN were therefore healthy.
+
+This means the observed long delay is not evidence that Sonos performs a secret,
+slow setup exchange that open-source controllers omit. It is the fixed timeout of
+the official scanner after its sends fail or are suppressed. The relevant gap in
+our code is nevertheless real: our current helper sends only one multicast request
+through the default interface and waits three seconds. It lacks the official
+per-interface multicast+broadcast fan-out, three-send retry schedule, passive
+advertisement listener, response aging, network-change restart, household-aware
+filter, and topology-driven system association.
+
+Open-source controllers are not all less capable here. Current SoCo discovery also
+enumerates usable IPv4 interfaces and sends three `ZonePlayer:1` multicast requests
+per interface, then asks the first player for the topology instead of waiting for
+every player response. It additionally offers an optional parallel TCP scan of
+port 1400 when multicast discovery fails. The official desktop core's distinctive
+pieces are limited-broadcast transmission, persistent passive SSDP/product aging,
+network-change state management, its household-aware join wizard, and the separate
+UDP-6969 product-setup path. SoCo's optional unicast network scan can actually be
+more resilient than the official controller when multicast is broken.
+
 ## The encrypted event payload
 
 The event property begins with `2:`. The rest is Base64. The confirmed version-2
@@ -132,19 +217,25 @@ invoke any account mutation or playback controls.
 
 ## Direct SMAPI browsing
 
-The account tuple is sufficient to reproduce the desktop app's service browser.
-The implementation is in `smapi_browser.py`; it has been verified while the Sonos
-desktop process was not running.
+The account tuple is sufficient to reproduce the desktop app's legacy SMAPI
+service browser for most providers.
+The implementation is in `smapi_browser.py`; it has been verified against the
+live household and cross-checked against the installed CrossOver desktop core's
+diagnostic log.
 
-The controller first obtains the value of `R_TrialZPSerial` with the local
-`SystemProperties/GetString` action. That becomes the SMAPI `deviceId`. It then
-sends HTTPS SOAP 1.1 requests to the selected catalog descriptor's `SecureUri`:
+The controller keeps two identities separate. The reachable player's
+`R_TrialZPSerial` is the legacy SMAPI SOAP `credentials.deviceId`, and its UDN is
+used for capability-gated zone routing. The desktop controller's persistent
+`MachineIdentifier` is the modern content-session `X-Sonos-Device-Id` value. In
+the active CrossOver installation that value is
+stored in `uidata.xml` as `47a51435-1e10-4324-9d6b-7e08cb155672`. It then sends
+HTTPS SOAP 1.1 requests to the selected catalog descriptor's `SecureUri`:
 
 ```text
 SOAP Header
   credentials
     zonePlayerId    = selected player UDN when capability bit 18 is set
-    deviceId       = R_TrialZPSerial
+    deviceId       = reachable player's R_TrialZPSerial
     deviceProvider = Sonos
     loginToken     = token/key/householdId when required by policy/capabilities
     sessionId      = cached getSessionId result for DeviceLink services
@@ -156,6 +247,7 @@ HTTP Headers
   Accept-Language: en-US
   X-Sonos-Controller-ID: controller UUID
   Authorization: Bearer <token> when capability bit 3 is set
+  X-Sonos-Device-Id: persistent controller MachineIdentifier
 
 SOAP Body
   getMetadata(id, index, count [, recursive])
@@ -191,6 +283,36 @@ descriptor's JSON manifest to its XML presentation map, selects the
 the term, index, and count. Search totals and pages are capped at 1,000 by the
 desktop implementation. `--search-categories` and `--search` reproduce this path.
 
+### Modern provider content sessions
+
+The manifest `browse` endpoint uses a separate desktop path. Decompiled
+`SCContentSessionBrowse::FUN_100247e60` proves that a provider request such as
+Apple's `https://sonos-music.apple.com/browse/v1` receives:
+
+```text
+Authorization: Bearer <current in-process account token>
+X-Sonos-Device-Id: <controller MachineIdentifier>
+Accept-Language: <account language>
+X-Sonos-Context-TimeZone: <zone>                 when capability bit 16 is set
+X-Sonos-Context-ContentFiltering: explicit       when enabled and supported
+X-Sonos-GroupCapability: <group capability>      when available
+```
+
+It does **not** use `X-Sonos-SMAPI-Auth`; that aggregate account envelope belongs
+to the controller's cross-service content search path. On HTTP 401,
+`SCContentSessionBrowse::FUN_100247cb0` invokes `FUN_100e24af0`, which constructs
+the ordinary `refreshAuthToken` operation, updates the controller's in-memory
+account token, and retries the provider URL once. `content_browse()` now mirrors
+that header selection and retry.
+
+The Play:1 firmware independently establishes the playback boundary. Ordinary
+`getMetadata`, `search`, and `getMediaMetadata` calls use the Bearer account token
+without a device signature. `getMediaURI` and `getContentKey` additionally derive
+`X-Sonos-MS-Sig`, attach `X-Sonos-DeviceCert`, and maintain the returned
+`deviceSessionToken`/`deviceSessionKey`. Those device-auth headers are therefore
+required for Apple playback dereference, but copying them onto controller browse
+requests would not reproduce the official browse code.
+
 ### Expiration and transient replacement
 
 The active desktop path has two capability-dependent branches. With capability
@@ -219,7 +341,7 @@ can access that account.
 
 ### Current live verification
 
-With the desktop app closed, the independent implementation has verified:
+The independent implementation has verified:
 
 - both configured Amazon Music accounts after embedded transient refresh;
 - SiriusXM and Audible after embedded transient refresh;
@@ -230,11 +352,22 @@ With the desktop app closed, the independent implementation has verified:
 - exact per-account selection when a service has multiple accounts;
 - the bit-3 `refreshAuthToken` construction used by Sonos Radio.
 
-The current Pandora records return `AuthTokenExpired` without replacement data,
-and the Apple record returns `InvalidToken`; the desktop state machine cannot
-derive a replacement from those responses. Sonos Radio refreshes successfully
-but its root `getMetadataResponse` is currently `xsi:nil` (and omits the `xsi`
-namespace declaration), which the browser tolerates as an empty result.
+The current legacy-SMAPI matrix is 11 successful account probes out of 14. The two
+Pandora records return `Client.AuthTokenExpired` / “Failed to reauth device id”
+without replacement data, and Apple's legacy SOAP `getMetadata` route returns
+`InvalidTokenException`. Apple's manifest-driven content route is different: a
+live `GET https://sonos-music.apple.com/browse/v1` using the `Token0` exported in
+`ThirdPartyMediaServersX` as an HTTP Bearer credential returned HTTP 200 and the
+authenticated account's Listen Now root, Library, recommendations, and radio
+sections. This proves the household credential is valid for modern Apple browse;
+it does not make that token valid for Apple's legacy SOAP browse operation.
+
+The manifest endpoint's root request is proven, but the child-page contract is
+not. Supplying a guessed `page=<objectId>` query returned the root document again,
+so `content_browse()` deliberately rejects non-root IDs rather than presenting a
+guess as successful navigation. Sonos Radio refreshes successfully but its root
+`getMetadataResponse` is currently `xsi:nil` (and omits the `xsi` namespace
+declaration), which the browser tolerates as an empty result.
 
 Run `python3 smapi_browser.py --probe-all` for a fresh per-account result. It does
 not print token/key values.

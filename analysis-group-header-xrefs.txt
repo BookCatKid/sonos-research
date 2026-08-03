@@ -1,0 +1,67 @@
+Matched functions: 1
+================================================================================
+Function: FUN_100e16ba0
+Entry: 100e16ba0
+Markers: X-Sonos-Group
+
+void FUN_100e16ba0(long *param_1,long param_2,char *param_3,char *param_4,char *param_5,
+                  char *param_6,char *param_7,char *param_8)
+
+{
+  char cVar1;
+  int iVar2;
+  undefined1 local_18a0 [40];
+  char local_1878 [4128];
+  char local_858 [2080];
+  long local_38;
+  
+  local_38 = *(long *)PTR____stack_chk_guard_1013a73f8;
+  cVar1 = FUN_100ee3ae0(DAT_1015de9c8,0x19);
+  iVar2 = _strncmp((char *)(param_1 + 0x83),"https",5);
+  if ((iVar2 == 0) || (cVar1 != '\0')) {
+    if ((param_5 != (char *)0x0) && (*param_5 != '\0')) {
+      (**(code **)(*param_1 + 0x60))(param_1,param_5);
+    }
+    if ((((*(byte *)(param_2 + 0x130) & 8) != 0) && (param_3 != (char *)0x0)) && (*param_3 != '\0'))
+    {
+      _snprintf(local_858,0x819,"AUTHORIZATION: Bearer %s",param_3);
+      (**(code **)(*param_1 + 0x60))(param_1,local_858);
+      FUN_100dfea60(param_1,1);
+      if ((*(byte *)(param_2 + 0x132) & 2) != 0) {
+        if ((param_6 != (char *)0x0) && (*param_6 != '\0')) {
+          _snprintf(local_1878,0x2bf,"X-Sonos-MS-Sig: %s");
+          (**(code **)(*param_1 + 0x60))(param_1,local_1878);
+        }
+        if ((param_7 != (char *)0x0) && (*param_7 != '\0')) {
+          _snprintf(local_1878,0x1017,"X-Sonos-DeviceCert: %s",param_7);
+          (**(code **)(*param_1 + 0x60))(param_1,local_1878);
+        }
+      }
+    }
+  }
+  else if (((param_5 != (char *)0x0) && (*param_5 != '\0')) ||
+          (((*(byte *)(param_2 + 0x130) & 8) != 0 &&
+           ((param_3 != (char *)0x0 && (*param_3 != '\0')))))) {
+    FUN_100bf0c20("sonoscp",3,"SMAPI uri must be HTTPS: %s, method=%s",param_1 + 0x83,
+                  (long)param_1 + 0x919);
+  }
+  if ((param_4 != (char *)0x0) && (*param_4 != '\0')) {
+    _snprintf(local_1878,0x33,"ACCEPT-LANGUAGE: %s",param_4);
+    (**(code **)(*param_1 + 0x60))(param_1,local_1878);
+  }
+  FUN_100ecd550(local_18a0,0);
+  _snprintf(local_1878,0x3d,"%s: %s","X-Sonos-Controller-ID",local_18a0);
+  (**(code **)(*param_1 + 0x60))(param_1,local_1878);
+  if ((param_8 != (char *)0x0) && (*param_8 != '\0')) {
+    _snprintf(local_858,0x3c,"X-Sonos-GroupCapability: %s",param_8);
+    (**(code **)(*param_1 + 0x60))(param_1,local_858);
+  }
+  FUN_100ecd5f0(local_18a0);
+  if (*(long *)PTR____stack_chk_guard_1013a73f8 == local_38) {
+    return;
+  }
+                    /* WARNING: Subroutine does not return */
+  ___stack_chk_fail();
+}
+
+

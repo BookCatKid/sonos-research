@@ -1,0 +1,45 @@
+================================================================================
+Requested: 100e24af0
+Function: FUN_100e24af0
+
+undefined8 FUN_100e24af0(long *param_1,undefined8 *param_2)
+
+{
+  void *pvVar1;
+  long lVar2;
+  undefined8 *puVar3;
+  undefined *puVar4;
+  
+  pvVar1 = operator_new(0x14b28);
+  lVar2 = param_1[2];
+  FUN_100e235a0(pvVar1,lVar2 + 0x1530,lVar2 + 0x1453,lVar2 + 0x124,lVar2 + 0x925,lVar2 + 0x104,
+                lVar2 + 0x1494);
+  lVar2 = (**(code **)(*param_1 + 0x20))(param_1);
+  puVar3 = operator_new(0x78);
+  FUN_100ee05b0(puVar3);
+  *puVar3 = &PTR_FUN_1014f05c8;
+  puVar3[2] = &PTR_FUN_1014f0630;
+  puVar3[6] = 0;
+  puVar3[7] = &DAT_1015db590;
+  puVar4 = PTR_DAT_1013a2550 + 0x10;
+  puVar3[8] = puVar4;
+  puVar3[9] = pvVar1;
+  FUN_100ec2520((long)pvVar1 + 8);
+  *(undefined4 *)(puVar3 + 10) = 0;
+  puVar3[8] = PTR_DAT_1013a1a80 + 0x10;
+  puVar3[0xb] = puVar4;
+  puVar3[0xc] = lVar2;
+  if (lVar2 != 0) {
+    FUN_100ec2520(lVar2 + 8);
+  }
+  *(undefined4 *)(puVar3 + 0xd) = 0;
+  puVar3[0xb] = PTR_DAT_1013a1838 + 0x10;
+  *(undefined1 *)(puVar3 + 0xe) = 0;
+  pvVar1 = operator_new(0xcb8);
+  FUN_100ec8fe0(pvVar1);
+  puVar3[6] = pvVar1;
+  *param_2 = puVar3;
+  return 0;
+}
+
+
