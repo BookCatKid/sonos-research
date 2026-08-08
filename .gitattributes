@@ -1,1 +1,6 @@
 *.gbf filter=lfs diff=lfs merge=lfs -text
+
+# Preserve vendored controller configuration evidence byte-for-byte, including
+# its original BOM/CRLF formatting. Synthetic runtime XML remains normal text.
+research/controller/**/fixture/**/*.config binary
+research/controller/**/fixture/**/*.conf binary

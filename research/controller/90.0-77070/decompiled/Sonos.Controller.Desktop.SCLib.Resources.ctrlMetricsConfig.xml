@@ -1,0 +1,77 @@
+<?xml version="1.0"?>
+<MetricsConfig version="1.0" rev="14" expires="10800" enabled="ON" defaultUploader="user-events">
+    <Uploader name="user-events" type="RReportUploader">
+        <Params>
+            <Param name="url" value="https://msmetrics.ws.sonos.com/data/submit.aspx"/>
+            <Param name="reportIntervalSec" value="60"/>
+        </Params>
+    </Uploader>
+    <Category name="browse.infoview" uploader-ref="user-events" level="OFF"/>
+    <Category name="browse.queue" uploader-ref="user-events" level="OFF"/>
+    <Category name="household.connectTimeout" uploader-ref="user-events" level="OFF"/>
+    <Category name="household.resumeNetworking" uploader-ref="user-events" level="OFF"/>
+    <Category name="household.suspendNetworking" uploader-ref="user-events" level="OFF"/>
+    <Category name="limitedConnectivity" uploader-ref="user-events" level="OFF"/>
+    <Category name="upnp.Browse" uploader-ref="user-events" level="OFF"/>
+    <Category name="upnp.CreateObject" uploader-ref="user-events" level="OFF"/>
+    <Category name="upnp.GetAlbumArtistDisplayOption" uploader-ref="user-events" level="OFF"/>
+    <Category name="upnp.GetAllPrefixLocations" uploader-ref="user-events" level="OFF"/>
+    <Category name="upnp.GetAudioInputAttributes" uploader-ref="user-events" level="OFF"/>
+    <Category name="upnp.GetBass" uploader-ref="user-events" level="OFF"/>
+    <Category name="upnp.GetButtonState" uploader-ref="user-events" level="OFF"/>
+    <Category name="upnp.GetCrossfadeMode" uploader-ref="user-events" level="OFF"/>
+    <Category name="upnp.GetDailyIndexRefreshTime" uploader-ref="user-events" level="OFF"/>
+    <Category name="upnp.getDeviceAuthToken" uploader-ref="user-events" level="OFF"/>
+    <Category name="upnp.getDeviceLinkCode" uploader-ref="user-events" level="OFF"/>
+    <Category name="upnp.GetEQ" uploader-ref="user-events" level="OFF"/>
+    <Category name="upnp.getExtendedMetadata" uploader-ref="user-events" level="OFF" />
+    <Category name="upnp.GetHeadphoneConnected" uploader-ref="user-events" level="OFF"/>
+    <Category name="upnp.getLastUpdate" uploader-ref="user-events" level="OFF"/>
+    <Category name="upnp.GetLEDFeedbackState" uploader-ref="user-events" level="OFF"/>
+    <Category name="upnp.GetLEDState" uploader-ref="user-events" level="OFF"/>
+    <Category name="upnp.GetLineInLevel" uploader-ref="user-events" level="OFF"/>
+    <Category name="upnp.GetLoudness" uploader-ref="user-events" level="OFF"/>
+    <Category name="upnp.GetMediaInfo" uploader-ref="user-events" level="OFF"/>
+    <Category name="upnp.getMediaMetadata" uploader-ref="user-events" level="OFF" />
+    <Category name="upnp.getMetadata" uploader-ref="user-events" level="OFF"/>
+    <Category name="upnp.GetMute" uploader-ref="user-events" level="OFF"/>
+    <Category name="upnp.GetOnlineUpdateMessage" uploader-ref="user-events" level="OFF"/>
+    <Category name="upnp.GetOutputFixed" uploader-ref="user-events" level="OFF"/>
+    <Category name="upnp.GetPositionInfo" uploader-ref="user-events" level="OFF"/>
+    <Category name="upnp.GetProtocolInfo" uploader-ref="user-events" level="OFF"/>
+    <Category name="upnp.GetRDM" uploader-ref="user-events" level="OFF"/>
+    <Category name="upnp.GetRemainingSleepTimerDuration" uploader-ref="user-events" level="OFF"/>
+    <Category name="upnp.GetRunningAlarmProperties" uploader-ref="user-events" level="OFF"/>
+    <Category name="upnp.GetString" uploader-ref="user-events" level="OFF"/>
+    <Category name="upnp.GetStringX" uploader-ref="user-events" level="OFF"/>
+    <Category name="upnp.getScrollIndices" uploader-ref="user-events" level="OFF"/>
+    <Category name="upnp.GetSessionId" uploader-ref="user-events" level="OFF"/>
+    <Category name="upnp.getSessionId" uploader-ref="user-events" level="OFF"/>
+    <Category name="upnp.GetSupportsOutputFixed" uploader-ref="user-events" level="OFF"/>
+    <Category name="upnp.GetTimeNow" uploader-ref="user-events" level="OFF"/>
+    <Category name="upnp.GetTimeServer" uploader-ref="user-events" level="OFF"/>
+    <Category name="upnp.GetTimeZoneAndRule" uploader-ref="user-events" level="OFF"/>
+    <Category name="upnp.getTrack" uploader-ref="user-events" level="OFF"/>
+    <Category name="upnp.GetTransportInfo" uploader-ref="user-events" level="OFF"/>
+    <Category name="upnp.GetTransportSettings" uploader-ref="user-events" level="OFF"/>
+    <Category name="upnp.GetTreble" uploader-ref="user-events" level="OFF"/>
+    <Category name="upnp.GetVolume" uploader-ref="user-events" level="OFF"/>
+    <Category name="upnp.GetZoneInfo" uploader-ref="user-events" level="OFF"/>
+    <Category name="upnp.GetZoneGroupState" uploader-ref="user-events" level="OFF"/>
+    <Category name="upnp.ListAvailableServices" uploader-ref="user-events" level="OFF"/>
+    <Category name="upnp.ListAlarms" uploader-ref="user-events" level="OFF"/>
+    <Category name="upnp.RegisterMobileDevice" uploader-ref="user-events" level="OFF"/>
+    <Category name="upnp.SetVolume"  uploader-ref="user-events" level="OFF"/>
+    <Category name="upnpError" uploader-ref="user-events" level="ON"/>
+    <Category name="upnpError.getExtendedMetadata" uploader-ref="user-events" level="OFF"/>
+    <Category name="upnpError.getLastUpdate" uploader-ref="user-events" level="OFF"/>
+    <Category name="upnpError.getMetadata" uploader-ref="user-events" level="OFF"/>
+    <Category name="upnpError.GetPositionInfo" uploader-ref="user-events" level="OFF"/>
+    <Category name="upnpError.GetRunningAlarmProperties" uploader-ref="user-events" level="OFF"/>
+    <Category name="upnpError.GetSessionId" uploader-ref="user-events" level="OFF"/>
+    <Category name="upnpError.getSessionId" uploader-ref="user-events" level="OFF"/>
+    <Category name="upnpError.GetString" uploader-ref="user-events" level="OFF"/>
+    <Category name="upnpError.GetTimeNow" uploader-ref="user-events" level="OFF"/>
+    <Category name="upnpError.GetTimeZoneAndRule" uploader-ref="user-events" level="OFF"/>
+    <Category name="upnpError.GetTransportInfo" uploader-ref="user-events" level="OFF"/>
+</MetricsConfig>

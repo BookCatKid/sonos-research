@@ -150,14 +150,31 @@ explicitly instead of treating it as a protocol failure.
 `sonos_system_inspector.py` creates a credential-redacted, read-only system
 snapshot. Starting from one player, it follows the live topology to every current
 member, reads every device and service description, catalogs all advertised UPnP
-actions/state variables, invokes only a hard-coded getter allow-list, inventories
-configured music accounts, and records useful installed-controller artifacts.
+actions/state variables, invokes only a hard-coded getter allow-list, and
+inventories configured music accounts. These LAN features work from a fresh
+clone. The versioned controller binaries, raw decompiler output, metrics
+resource, complete non-personal configs, and synthetic controller-state fixtures
+used for static enrichment are included under `research/controller/`.
 
 ```sh
 python3 sonos_system_inspector.py
 
 # Multicast-independent seed when necessary
 python3 sonos_system_inspector.py --host 192.168.1.51
+
+# Optional: override the included research bundle with another controller build
+python3 sonos_system_inspector.py --host 192.168.1.51 \
+  --controller-root '/path/to/windows/drive_c' \
+  --decompiled-root '/path/to/decompiled/resources' \
+  --interop-root '/path/to/decompiled/Sonos.SCLib.Interop'
+```
+
+The default local-controller section reads only the checked-in research bundle,
+not files elsewhere on the developer's machine. `--skip-local` omits the section
+entirely. Regenerate the synthetic identity/application-cache fixtures with:
+
+```sh
+python3 research/controller/generate_fixture.py
 ```
 
 The private-mode outputs are written to `analysis/system-inspection.json` and

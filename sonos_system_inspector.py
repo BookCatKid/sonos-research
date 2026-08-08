@@ -30,17 +30,17 @@ from smapi_browser import (
     local_name,
     local_soap,
 )
-from sonos_discovery import DiscoveredPlayer, discover_players
-
+from sonos_discovery import discover_players
 
 ZONE_GROUP_TOPOLOGY = "urn:schemas-upnp-org:service:ZoneGroupTopology:1"
 DEVICE_PROPERTIES = "urn:schemas-upnp-org:service:DeviceProperties:1"
 SYSTEM_PROPERTIES = "urn:schemas-upnp-org:service:SystemProperties:1"
 
-DEFAULT_CROSSOVER_ROOT = (
-    Path.home() / "Library/Application Support/CrossOver/Bottles/sonos/drive_c"
-)
-DEFAULT_DECOMPILED_ROOT = Path("/tmp/sonos-desktop-decompiled")
+REPOSITORY_ROOT = Path(__file__).resolve().parent
+RESEARCH_CONTROLLER_ROOT = REPOSITORY_ROOT / "research/controller/90.0-77070"
+REPOSITORY_CONTROLLER_FIXTURE = RESEARCH_CONTROLLER_ROOT / "fixture/drive_c"
+REPOSITORY_DECOMPILED_ROOT = RESEARCH_CONTROLLER_ROOT / "decompiled"
+REPOSITORY_INTEROP_ROOT = REPOSITORY_DECOMPILED_ROOT / "Sonos.SCLib.Interop"
 
 SENSITIVE_NAMES = {
     "accountkey",
@@ -503,26 +503,78 @@ def account_inventory(host: str, household_id: str) -> dict[str, Any]:
 
 
 def inspect_local_controller(
-    crossover_root: Path = DEFAULT_CROSSOVER_ROOT,
-    decompiled_root: Path = DEFAULT_DECOMPILED_ROOT,
+    crossover_root: Path | None = None,
+    decompiled_root: Path | None = None,
+    interop_root: Path | None = None,
 ) -> dict[str, Any]:
-    result: dict[str, Any] = {"files": {}, "hidden_surfaces": {}}
-    runtime = crossover_root / "ProgramData/SonosV2,_Inc/runtime"
-    anacapa = crossover_root / "ProgramData/SonosV2,_Inc/anacapa/conf/anacapa.conf"
-    desktop_config = (
-        crossover_root
-        / "Program Files (x86)/SonosV2/Sonos.Controller.Desktop.dll.config"
-    )
-    cache = runtime / "sonos_application_cache.config"
-    uidata = runtime / "uidata.xml"
+    """Inspect optional controller/decompiler artifacts when supplied locally.
+
+    None of these files are required for LAN inspection. By default the scanner
+    uses the versioned research bundle included in the repository. Callers can
+    override any root to inspect a different installed controller or decompilation.
+    """
+    if crossover_root is None and REPOSITORY_CONTROLLER_FIXTURE.exists():
+        crossover_root = REPOSITORY_CONTROLLER_FIXTURE
+    if decompiled_root is None and REPOSITORY_DECOMPILED_ROOT.exists():
+        decompiled_root = REPOSITORY_DECOMPILED_ROOT
+    if interop_root is None and decompiled_root is not None:
+        nested_interop = decompiled_root / "Sonos.SCLib.Interop"
+        if nested_interop.exists():
+            interop_root = nested_interop
+        elif (decompiled_root / "sclib.cs").exists():
+            interop_root = decompiled_root
+
+    result: dict[str, Any] = {
+        "status": "unavailable",
+        "message": (
+            "Optional local controller artifacts were not found. LAN, topology, "
+            "capability, and music-account inspection are unaffected."
+        ),
+        "sources": {
+            "installed_controller": {
+                "available": bool(crossover_root and crossover_root.exists()),
+                "path": str(crossover_root) if crossover_root else None,
+                "kind": "repository_fixture" if crossover_root == REPOSITORY_CONTROLLER_FIXTURE else "user_supplied",
+            },
+            "decompiled_resources": {
+                "available": bool(decompiled_root and decompiled_root.exists()),
+                "path": str(decompiled_root) if decompiled_root else None,
+                "kind": "repository_research" if decompiled_root == REPOSITORY_DECOMPILED_ROOT else "user_supplied",
+            },
+            "decompiled_interop": {
+                "available": bool(interop_root and interop_root.exists()),
+                "path": str(interop_root) if interop_root else None,
+                "kind": "repository_research" if interop_root == REPOSITORY_INTEROP_ROOT else "user_supplied",
+            },
+        },
+        "files": {},
+        "hidden_surfaces": {},
+    }
+    available_sources = [source["available"] for source in result["sources"].values()]
+    if any(available_sources):
+        result["status"] = "available" if all(available_sources) else "partial"
+        result.pop("message", None)
+
+    if crossover_root is None or not crossover_root.exists():
+        runtime = anacapa = desktop_config = None
+    else:
+        runtime = crossover_root / "ProgramData/SonosV2,_Inc/runtime"
+        anacapa = crossover_root / "ProgramData/SonosV2,_Inc/anacapa/conf/anacapa.conf"
+        desktop_config = (
+            crossover_root
+            / "Program Files (x86)/SonosV2/Sonos.Controller.Desktop.dll.config"
+        )
+    cache = runtime / "sonos_application_cache.config" if runtime else None
+    uidata = runtime / "uidata.xml" if runtime else None
     for name, path in {
         "application_cache": cache,
         "controller_identity": uidata,
         "anacapa_config": anacapa,
         "desktop_config": desktop_config,
     }.items():
-        result["files"][name] = {"path": str(path), "exists": path.exists()}
-    if cache.exists():
+        if path is not None:
+            result["files"][name] = {"path": str(path), "exists": path.exists()}
+    if cache is not None and cache.exists():
         try:
             root = ET.parse(cache).getroot()
             settings = []
@@ -538,14 +590,14 @@ def inspect_local_controller(
             )
         except ET.ParseError as error:
             result["files"]["application_cache"]["error"] = str(error)
-    if uidata.exists():
+    if uidata is not None and uidata.exists():
         text = uidata.read_text(encoding="utf-8", errors="replace")
         result["files"]["controller_identity"].update(
             machine_identifier_present="MachineIdentifier" in text,
             mac_address_present="MACAddress" in text,
             values_redacted=True,
         )
-    if anacapa.exists():
+    if anacapa is not None and anacapa.exists():
         settings: dict[str, str] = {}
         for line in anacapa.read_text(encoding="utf-8", errors="replace").splitlines():
             stripped = line.strip()
@@ -554,7 +606,7 @@ def inspect_local_controller(
             key, _, value = stripped.partition(" ")
             settings[key] = value.strip()
         result["files"]["anacapa_config"]["settings"] = settings
-    if desktop_config.exists():
+    if desktop_config is not None and desktop_config.exists():
         try:
             root = ET.parse(desktop_config).getroot()
             debug_nodes = root.findall("./debugConsole")
@@ -564,8 +616,12 @@ def inspect_local_controller(
             )
         except ET.ParseError as error:
             result["files"]["desktop_config"]["error"] = str(error)
-    metrics = decompiled_root / "Sonos.Controller.Desktop.SCLib.Resources.ctrlMetricsConfig.xml"
-    if metrics.exists():
+    metrics = (
+        decompiled_root / "Sonos.Controller.Desktop.SCLib.Resources.ctrlMetricsConfig.xml"
+        if decompiled_root is not None
+        else None
+    )
+    if metrics is not None and metrics.exists():
         try:
             root = ET.parse(metrics).getroot()
             categories = [node.attrib.get("name", "") for node in root.iter() if local_name(node.tag) == "Category"]
@@ -576,9 +632,8 @@ def inspect_local_controller(
             }
         except ET.ParseError as error:
             result["hidden_surfaces"]["metrics"] = {"path": str(metrics), "error": str(error)}
-    constant_file = Path("/tmp/sonos-interop-decompiled.MZAhPX/Sonos.SCLib.Interop/sclib.cs")
-    interop_root = constant_file.parent
-    if constant_file.exists():
+    constant_file = interop_root / "sclib.cs" if interop_root is not None else None
+    if constant_file is not None and constant_file.exists():
         text = constant_file.read_text(encoding="utf-8", errors="replace")
         groups = {
             # The word boundary excludes the prefix of generated SWIG getters
@@ -593,23 +648,27 @@ def inspect_local_controller(
         result["hidden_surfaces"]["native_constants"] = {
             name: sorted(set(re.findall(pattern, text))) for name, pattern in groups.items()
         }
-    token_manager = interop_root / "SCITokenManager.cs"
-    user_account = interop_root / "SCIUserAccount.cs"
-    if token_manager.exists():
+    token_manager = interop_root / "SCITokenManager.cs" if interop_root is not None else None
+    user_account = interop_root / "SCIUserAccount.cs" if interop_root is not None else None
+    if token_manager is not None and token_manager.exists():
         text = token_manager.read_text(encoding="utf-8", errors="replace")
         result["hidden_surfaces"]["first_party_identity"] = {
             "token_purposes": sorted(set(re.findall(r"\b[A-Z][A-Z0-9_]*_PURPOSE\b", text))),
             "source": str(token_manager),
             "static_names_only": True,
         }
-    if user_account.exists():
+    if user_account is not None and user_account.exists():
         text = user_account.read_text(encoding="utf-8", errors="replace")
         identity = result["hidden_surfaces"].setdefault("first_party_identity", {})
         identity["roles"] = sorted(set(re.findall(r"^\s*(OWNER|ADMIN|UNKNOWN),?$", text, re.MULTILINE)))
         identity["profile_methods"] = sorted(
             set(re.findall(r"public virtual [^{\n]+\s+(getEmail|getId|getReleaseProgramType|getVerificationStatus|refreshUserProfileInfo|signOut)\(", text))
         )
-    wizard_sources = [interop_root / "SCIHousehold.cs", interop_root / "SCISystem.cs"]
+    wizard_sources = (
+        [interop_root / "SCIHousehold.cs", interop_root / "SCISystem.cs"]
+        if interop_root is not None
+        else []
+    )
     wizard_factories: list[dict[str, str]] = []
     for source in wizard_sources:
         if not source.exists():
@@ -736,6 +795,21 @@ def main() -> None:
     parser.add_argument("--markdown", default="analysis/system-inspection.md", help="summary Markdown output")
     parser.add_argument("--skip-accounts", action="store_true", help="skip event subscription/account inventory")
     parser.add_argument("--skip-local", action="store_true", help="skip installed-controller artifact inventory")
+    parser.add_argument(
+        "--controller-root",
+        type=Path,
+        help="optional Windows C-drive root containing an installed Sonos controller",
+    )
+    parser.add_argument(
+        "--decompiled-root",
+        type=Path,
+        help="optional directory containing decompiled desktop resource files",
+    )
+    parser.add_argument(
+        "--interop-root",
+        type=Path,
+        help="optional directory containing decompiled Sonos.SCLib.Interop C# files",
+    )
     args = parser.parse_args()
 
     discovered = [] if args.host else discover_players(args.timeout)
@@ -825,7 +899,11 @@ def main() -> None:
         except Exception as error:
             report["music"] = {"error": f"{error.__class__.__name__}: {error}"}
     if not args.skip_local:
-        report["local_controller"] = inspect_local_controller()
+        report["local_controller"] = inspect_local_controller(
+            crossover_root=args.controller_root.expanduser().resolve() if args.controller_root else None,
+            decompiled_root=args.decompiled_root.expanduser().resolve() if args.decompiled_root else None,
+            interop_root=args.interop_root.expanduser().resolve() if args.interop_root else None,
+        )
     output_path = Path(args.output).expanduser().resolve()
     markdown_path = Path(args.markdown).expanduser().resolve()
     write_private(output_path, json.dumps(report, indent=2, ensure_ascii=False) + "\n")

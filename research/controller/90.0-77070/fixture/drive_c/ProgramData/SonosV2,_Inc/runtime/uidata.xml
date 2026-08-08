@@ -1,0 +1,11 @@
+<?xml version='1.0' encoding='utf-8'?>
+<Items>
+  <Item>
+    <Name>MachineIdentifier</Name>
+    <Value>00000000-0000-4000-8000-000000000001</Value>
+  </Item>
+  <Item>
+    <Name>MACAddress</Name>
+    <Value>020000000001</Value>
+  </Item>
+</Items>

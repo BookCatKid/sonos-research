@@ -11,15 +11,15 @@ from smapi_browser import Account, Service
 from sonos_system_inspector import (
     account_inventory,
     action_risk,
-    inspect_player,
     fetch_player_path,
+    inspect_local_controller,
+    inspect_player,
     parse_device_description,
     parse_scpd,
     parse_zone_group_state,
     soap_values,
     write_private,
 )
-
 
 DEVICE_XML = b"""<?xml version="1.0"?>
 <root xmlns="urn:schemas-upnp-org:device-1-0"><device>
@@ -150,6 +150,43 @@ class InspectorTests(unittest.TestCase):
             write_private(path, json.dumps({"ok": True}))
             mode = stat.S_IMODE(path.stat().st_mode)
             self.assertEqual(mode, 0o600)
+
+    def test_fresh_clone_does_not_require_local_controller_artifacts(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            missing = Path(directory) / "not-installed"
+            result = inspect_local_controller(missing, missing, missing)
+        self.assertEqual(result["status"], "unavailable")
+        self.assertEqual(result["files"], {})
+        self.assertEqual(result["hidden_surfaces"], {})
+        self.assertIn("LAN", result["message"])
+
+    def test_default_research_bundle_is_self_contained(self) -> None:
+        result = inspect_local_controller()
+        self.assertEqual(result["status"], "available")
+        self.assertEqual(result["sources"]["installed_controller"]["kind"], "repository_fixture")
+        self.assertTrue(result["files"]["application_cache"]["exists"])
+        self.assertTrue(result["files"]["controller_identity"]["values_redacted"])
+        self.assertIn("native_constants", result["hidden_surfaces"])
+
+    def test_explicit_interop_root_is_used_instead_of_a_temp_path(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "sclib.cs").write_text(
+                "SCISETTING_CONTENT_DEBUG_LOG_REQUEST SC_ACTIONID_DEBUG_FETCH_SERVICE_OUTAGES",
+                encoding="utf-8",
+            )
+            (root / "SCITokenManager.cs").write_text("DEFAULT_USER_PURPOSE", encoding="utf-8")
+            result = inspect_local_controller(interop_root=root)
+        self.assertEqual(result["status"], "available")
+        self.assertEqual(result["sources"]["decompiled_interop"]["kind"], "user_supplied")
+        self.assertEqual(
+            result["hidden_surfaces"]["native_constants"]["debug_actions"],
+            ["SC_ACTIONID_DEBUG_FETCH_SERVICE_OUTAGES"],
+        )
+        self.assertEqual(
+            result["hidden_surfaces"]["first_party_identity"]["token_purposes"],
+            ["DEFAULT_USER_PURPOSE"],
+        )
 
 
 if __name__ == "__main__":
