@@ -1,5 +1,11 @@
 # Sonos local music-service browser
 
+> # ⚠️ WARNING: AI SLOP
+>
+> **THIS REPOSITORY WAS PRODUCED WITH HEAVY AI ASSISTANCE. TAKE EVERYTHING HERE WITH A GRAIN OF SALT.**
+>
+> In fairness: it does work very well and I spent a lot of time refining it but just be careful and please don't hate me.
+
 This project reproduces how the installed Sonos desktop controller discovers the
 music-service accounts already configured in a household without a Sonos cloud
 login.
@@ -50,8 +56,8 @@ The decoder's output intentionally includes the local account material in this
 workspace; treat its JSON output as a secrets file.
 
 The full protocol derivation and the Home Assistant integration direction are in
-[REVERSE_ENGINEERING.md](REVERSE_ENGINEERING.md). The concrete coordinator and
-entity boundary is in [HA_INTEGRATION.md](HA_INTEGRATION.md).
+[REVERSE_ENGINEERING.md](docs/REVERSE_ENGINEERING.md). The concrete coordinator and
+entity boundary is in [HA_INTEGRATION.md](docs/HA_INTEGRATION.md).
 
 ## Browse services without the desktop app
 

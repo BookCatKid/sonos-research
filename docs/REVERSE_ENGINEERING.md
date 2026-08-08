@@ -104,10 +104,10 @@ This means the observed long delay is not evidence that Sonos performs a secret,
 slow setup exchange that open-source controllers omit. It is the fixed timeout of
 the official scanner after its sends fail or are suppressed. The relevant gap in
 our original code was nevertheless real: it sent only one multicast request
-through the default interface. `sonos_discovery.py` now closes the immediate
+through the default interface. `../sonos_discovery.py` now closes the immediate
 reliability gap with per-interface multicast+broadcast fan-out, a three-send retry
 schedule, deduplication, household-aware filtering, and topology-driven system
-association in `sonos_system_inspector.py`. Persistent passive advertisements,
+association in `../sonos_system_inspector.py`. Persistent passive advertisements,
 response aging, and network-change restarts remain work for a long-running
 coordinator rather than the one-shot CLI.
 
@@ -221,7 +221,7 @@ invoke any account mutation or playback controls.
 
 The account tuple is sufficient to reproduce the desktop app's legacy SMAPI
 service browser for most providers.
-The implementation is in `smapi_browser.py`; it has been verified against the
+The implementation is in `../smapi_browser.py`; it has been verified against the
 live household and cross-checked against the installed CrossOver desktop core's
 diagnostic log.
 
@@ -420,11 +420,11 @@ not print token/key values.
 The breadth-first `--crawl-all` audit on 2026-08-02 covered all 14 configured
 accounts with a per-account ceiling of 30 seconds, 300 opened collections, 5,000
 returned items, and depth 12. The checkpointed report is
-`analysis/music-service-tree-2026-08-02.json`.
+`../analysis/music-service-tree-2026-08-02.json`.
 
 A second household-wide audit on 2026-08-07 used the corrected account-scoped
 content handoff and a 90-second budget per account. Its checkpoint is
-`analysis/music-service-tree-2026-08-07.json`. SiriusXM opened 239 collections
+`../analysis/music-service-tree-2026-08-07.json`. SiriusXM opened 239 collections
 and returned 3,205 items with zero errors; NRK opened 233/3,270, Sveriges Radio
 68/3,281, Sonos Radio 43/24,385, and myTuner 2/10,208, also with zero errors.
 Audible, Radio Paradise, and JazzGroove completed their finite trees with zero

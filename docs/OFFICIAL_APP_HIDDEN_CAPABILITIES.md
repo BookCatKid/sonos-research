@@ -26,7 +26,7 @@ There are three different evidence levels below:
 6. The player returns an account UDN and, for OAuth, an account nickname. The player stores the account and distributes it to the household. Sonos' current account-matching documentation explicitly confirms that the player stores the account and replicates changes throughout the household.
 7. Subsequent service browse calls use that account's login token. Playback still has another player-side phase: the player obtains media metadata/URI/content keys as needed and plays the returned stream.
 
-Native evidence is in `ghidra-class-xrefs.txt`: `FUN_100e60740` builds `AddAccountX`; `FUN_100e609a0` builds `AddOAuthAccountX` and shows every input and output field. Current Sonos documentation describes the provider side of the same flow in [Add authentication](https://docs.sonos.com/docs/add-authentication), [Add browser authentication](https://docs.sonos.com/docs/add-browser-authentication), and [getDeviceAuthToken](https://docs.sonos.com/docs/getdeviceauthtoken).
+Native evidence is in `../research/ghidra-class-xrefs.txt`: `FUN_100e60740` builds `AddAccountX`; `FUN_100e609a0` builds `AddOAuthAccountX` and shows every input and output field. Current Sonos documentation describes the provider side of the same flow in [Add authentication](https://docs.sonos.com/docs/add-authentication), [Add browser authentication](https://docs.sonos.com/docs/add-browser-authentication), and [getDeviceAuthToken](https://docs.sonos.com/docs/getdeviceauthtoken).
 
 ### How app-link versus browser-link is chosen
 
@@ -182,7 +182,7 @@ These are ordered by value and safety:
 2. **Redacting content-log harness**: initialize only the native logging path in isolation, determine the exact sink for content request/response logging, and redact Authorization/login tokens before persistence.
 3. **Internal wizard catalog dumper**: enumerate action descriptors and wizard types without performing them. This should expose hidden setup/lifecycle entry points safely.
 4. **Diagnostic bundle manifest tool**: reproduce the list of evidence Sonos collects but show the user a manifest and redaction preview before any collection or upload.
-5. **Explicit-confirmation account onboarding tool — completed**: `sonos_account_onboarding.py` and the GUI implement descriptor-driven anonymous/password/device-link/app-link flows. They invoke `AddAccountX`/`AddOAuthAccountX` only after showing the exact target household, service, and mutation, and reject a link session if the target player belongs to another household.
+5. **Explicit-confirmation account onboarding tool — completed**: `../sonos_account_onboarding.py` and the GUI implement descriptor-driven anonymous/password/device-link/app-link flows. They invoke `AddAccountX`/`AddOAuthAccountX` only after showing the exact target household, service, and mutation, and reject a link session if the target player belongs to another household.
 
 ## Bottom line
 

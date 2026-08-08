@@ -6,7 +6,7 @@ and cannot accidentally damage a household.
 
 ## Completed foundation
 
-1. **Resilient LAN discovery** — `sonos_discovery.py` performs per-interface
+1. **Resilient LAN discovery** — `../sonos_discovery.py` performs per-interface
    multicast and limited broadcast, sends three probes, deduplicates responses,
    and retains household identity. The account decoder, SMAPI browser, GUI, and
    system inspector all use it.
@@ -14,19 +14,19 @@ and cannot accidentally damage a household.
    descriptor parsing, credential-safe GUI, desktop transport selection, modern
    content sessions, legacy SMAPI, child browsing, artwork, searching, recursive
    crawling, and process-local credential refresh.
-3. **Whole-system intelligence** — `sonos_system_inspector.py` follows topology to
+3. **Whole-system intelligence** — `../sonos_system_inspector.py` follows topology to
    every current member, inventories model/firmware/bond/group state, reads device
    SCPDs, catalogs all operations and state variables, polls an explicit safe
    getter list, inventories music accounts without credential values, and extracts
    hidden controller/debug/metrics surfaces.
-4. **Snapshot comparison** — `sonos_system_diff.py` detects player, firmware,
+4. **Snapshot comparison** — `../sonos_system_diff.py` detects player, firmware,
    room, topology, account, service-catalog, credential-state, and capability
    changes offline.
-5. **Music-service account onboarding** — `sonos_account_onboarding.py` and the
+5. **Music-service account onboarding** — `../sonos_account_onboarding.py` and the
    GUI implement anonymous/credential, modern AppLink, and legacy DeviceLink
    discovery plus explicit-confirmation `AddAccountX`/`AddOAuthAccountX`
    commits. Link sessions are household-bound and credentials remain in memory.
-6. **Service status** — `sonos_service_status.py` provides the safe public
+6. **Service status** — `../sonos_service_status.py` provides the safe public
    equivalent of the unproven native outage debug action using Sonos's official
    Statuspage API.
 

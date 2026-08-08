@@ -109,7 +109,7 @@ and results are independent.
 
 ## Current implementation mapping
 
-`smapi_browser.py` already implements the synchronous forms of discovery,
+`../smapi_browser.py` already implements the synchronous forms of discovery,
 inventory, `probe`, `browse`, `media_metadata`, search-category discovery, search,
 DeviceLink session acquisition, and process-local refresh. Refresh is enabled by
 `--refresh-credentials` and does not mutate the player. An HA custom component should

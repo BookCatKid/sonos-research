@@ -20,7 +20,7 @@ Three related native constants exist:
 
 There are also debug actions for pushing and deleting “system status.” Together these strongly suggest a controller action that refreshes an outage/status model and a feature gate that decides whether the resulting notification is shown. That relationship is an inference. The interop assembly exposes only the action identifier; it contains no typed `fetchServiceOutages()` method, URL, response model, or desktop invocation. Therefore the earlier short description “asks Sonos cloud for current incidents” was too definite.
 
-The safe standalone equivalent is `sonos_service_status.py`, which uses Sonos's documented public Statuspage endpoints for overall status, components, and unresolved incidents. It does not claim to reproduce an unproven private notification feed.
+The safe standalone equivalent is `../sonos_service_status.py`, which uses Sonos's documented public Statuspage endpoints for overall status, components, and unresolved incidents. It does not claim to reproduce an unproven private notification feed.
 
 ## Music-service account onboarding
 

@@ -2,7 +2,11 @@ out.json
 .DS_Store
 
 __pycache__/
-analysis/music-service-tree-*.json
+
+# Raw captures and account trees contain the real household ID, device
+# serials, and account material; keep them out of Git.
+*.pcap
+analysis/*-tree-*.json
 analysis/system-inspection.json
 analysis/system-inspection.md
 analysis/system-diff.json
