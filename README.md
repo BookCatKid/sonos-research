@@ -98,3 +98,35 @@ credential-redacted before being written.
 An account containing Sonos's literal `needs_reauth` marker cannot be refreshed;
 it must first be reauthorized through Sonos. `--probe-all` reports that state
 explicitly instead of treating it as a protocol failure.
+
+## Inspect the complete household without the desktop app
+
+`sonos_system_inspector.py` creates a credential-redacted, read-only system
+snapshot. Starting from one player, it follows the live topology to every current
+member, reads every device and service description, catalogs all advertised UPnP
+actions/state variables, invokes only a hard-coded getter allow-list, inventories
+configured music accounts, and records useful installed-controller artifacts.
+
+```sh
+python3 sonos_system_inspector.py
+
+# Multicast-independent seed when necessary
+python3 sonos_system_inspector.py --host 192.168.1.51
+```
+
+The private-mode outputs are written to `analysis/system-inspection.json` and
+`analysis/system-inspection.md`; both generated files are ignored by Git. No
+generic SOAP execution or mutation option exists in the inspector.
+
+Compare two snapshots after a firmware update, regrouping, account change, or
+controller experiment:
+
+```sh
+python3 sonos_system_diff.py before.json after.json \
+  --output analysis/system-diff.json \
+  --markdown analysis/system-diff.md
+```
+
+All tools now share `sonos_discovery.py`, which matches the resilient part of the
+official discovery strategy: every usable IPv4 interface, multicast plus limited
+broadcast, three sends one second apart, response deduplication, and household IDs.

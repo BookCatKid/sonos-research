@@ -3,3 +3,7 @@ out.json
 
 __pycache__/
 analysis/music-service-tree-*.json
+analysis/system-inspection.json
+analysis/system-inspection.md
+analysis/system-diff.json
+analysis/system-diff.md

@@ -1,0 +1,143 @@
+from __future__ import annotations
+
+import json
+import stat
+import tempfile
+import unittest
+from pathlib import Path
+from unittest.mock import patch
+
+from smapi_browser import Account, Service
+from sonos_system_inspector import (
+    account_inventory,
+    action_risk,
+    inspect_player,
+    parse_device_description,
+    parse_scpd,
+    parse_zone_group_state,
+    soap_values,
+    write_private,
+)
+
+
+DEVICE_XML = b"""<?xml version="1.0"?>
+<root xmlns="urn:schemas-upnp-org:device-1-0"><device>
+  <deviceType>urn:schemas-upnp-org:device:ZonePlayer:1</deviceType>
+  <friendlyName>Test Room</friendlyName><modelName>Test Speaker</modelName>
+  <softwareVersion>1.2-345</softwareVersion><UDN>uuid:RINCON_TEST</UDN>
+  <serviceList>
+    <service><serviceType>urn:schemas-upnp-org:service:DeviceProperties:1</serviceType>
+      <serviceId>urn:upnp-org:serviceId:DeviceProperties</serviceId>
+      <controlURL>/DeviceProperties/Control</controlURL>
+      <eventSubURL>/DeviceProperties/Event</eventSubURL>
+      <SCPDURL>/xml/DeviceProperties1.xml</SCPDURL></service>
+    <service><serviceType>urn:schemas-upnp-org:service:GroupRenderingControl:1</serviceType>
+      <serviceId>urn:upnp-org:serviceId:GroupRenderingControl</serviceId>
+      <controlURL>/GroupRenderingControl/Control</controlURL>
+      <eventSubURL>/GroupRenderingControl/Event</eventSubURL>
+      <SCPDURL>/xml/GroupRenderingControl1.xml</SCPDURL></service>
+  </serviceList>
+</device></root>"""
+
+DEVICE_SCPD = b"""<scpd xmlns="urn:schemas-upnp-org:service-1-0"><actionList>
+  <action><name>GetHouseholdID</name><argumentList>
+    <argument><name>CurrentHouseholdID</name><direction>out</direction><relatedStateVariable>HouseholdID</relatedStateVariable></argument>
+  </argumentList></action>
+  <action><name>SetZoneAttributes</name><argumentList>
+    <argument><name>DesiredZoneName</name><direction>in</direction><relatedStateVariable>ZoneName</relatedStateVariable></argument>
+  </argumentList></action>
+</actionList><serviceStateTable>
+  <stateVariable sendEvents="yes"><name>HouseholdID</name><dataType>string</dataType></stateVariable>
+</serviceStateTable></scpd>"""
+
+GROUP_SCPD = b"""<scpd xmlns="urn:schemas-upnp-org:service-1-0"><actionList>
+  <action><name>GetGroupVolume</name><argumentList>
+    <argument><name>InstanceID</name><direction>in</direction><relatedStateVariable>A_ARG_TYPE_InstanceID</relatedStateVariable></argument>
+    <argument><name>CurrentVolume</name><direction>out</direction><relatedStateVariable>Volume</relatedStateVariable></argument>
+  </argumentList></action>
+</actionList></scpd>"""
+
+HOUSEHOLD_RESPONSE = b"""<s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/">
+<s:Body><u:GetHouseholdIDResponse xmlns:u="urn:schemas-upnp-org:service:DeviceProperties:1">
+<CurrentHouseholdID>Sonos_test</CurrentHouseholdID></u:GetHouseholdIDResponse></s:Body></s:Envelope>"""
+
+
+class InspectorTests(unittest.TestCase):
+    def test_device_and_scpd_parsing(self) -> None:
+        device, services = parse_device_description(DEVICE_XML)
+        self.assertEqual(device["friendlyName"], "Test Room")
+        self.assertEqual(len(services), 2)
+        scpd = parse_scpd(DEVICE_SCPD)
+        self.assertEqual([row["name"] for row in scpd["actions"]], ["GetHouseholdID", "SetZoneAttributes"])
+        self.assertEqual(scpd["actions"][0]["risk"], "read")
+        self.assertEqual(scpd["actions"][1]["risk"], "mutation")
+
+    def test_action_risk_is_conservative(self) -> None:
+        self.assertEqual(action_risk("GetZoneInfo"), "read")
+        self.assertEqual(action_risk("FactoryReset"), "mutation")
+        self.assertEqual(action_risk("BecomeCoordinatorOfStandaloneGroup"), "mutation")
+        self.assertEqual(action_risk("MagicVendorOperation"), "unknown")
+
+    def test_embedded_topology_parsing(self) -> None:
+        topology = parse_zone_group_state(
+            '<ZoneGroupState><ZoneGroups><ZoneGroup Coordinator="RINCON_A" ID="g1">'
+            '<ZoneGroupMember UUID="RINCON_A" ZoneName="Kitchen" '
+            'Location="http://192.0.2.1:1400/xml/device_description.xml">'
+            '<Satellite UUID="RINCON_B" ZoneName="Sub"/></ZoneGroupMember>'
+            "</ZoneGroup></ZoneGroups></ZoneGroupState>"
+        )
+        self.assertEqual(topology["group_count"], 1)
+        self.assertEqual(topology["member_count"], 1)
+        self.assertEqual(topology["groups"][0]["members"][0]["satellites"][0]["ZoneName"], "Sub")
+
+    def test_soap_values_redacts_credentials(self) -> None:
+        response = b"""<s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/"><s:Body>
+        <Response><Token>secret</Token><Name>safe</Name></Response></s:Body></s:Envelope>"""
+        values = soap_values(response)
+        self.assertEqual(values["Name"], "safe")
+        self.assertEqual(values["Token"], {"redacted": True, "present": True, "length": 6})
+
+    def test_inspection_never_calls_mutations_or_noncoordinator_group_reads(self) -> None:
+        calls: list[str] = []
+
+        def fake_fetch(url: str, timeout: float = 8.0) -> bytes:
+            if url.endswith("device_description.xml"):
+                return DEVICE_XML
+            if url.endswith("DeviceProperties1.xml"):
+                return DEVICE_SCPD
+            if url.endswith("GroupRenderingControl1.xml"):
+                return GROUP_SCPD
+            raise AssertionError(url)
+
+        def fake_soap(_host: str, _path: str, _service: str, action: str, _fields: dict[str, str]) -> bytes:
+            calls.append(action)
+            if action == "GetHouseholdID":
+                return HOUSEHOLD_RESPONSE
+            raise AssertionError(f"unexpected action {action}")
+
+        with patch("sonos_system_inspector.fetch", side_effect=fake_fetch), patch(
+            "sonos_system_inspector.local_soap", side_effect=fake_soap
+        ):
+            result = inspect_player("192.0.2.1", allow_group_reads=False)
+        self.assertEqual(calls, ["GetHouseholdID"])
+        self.assertNotIn("SetZoneAttributes", result["reads"])
+        self.assertNotIn("GetGroupVolume", result["reads"])
+
+    def test_special_account_without_numeric_uid_does_not_abort_inventory(self) -> None:
+        service = Service(235, "Special", "https://example.test/smapi", "Anonymous", 0, {})
+        account = Account(235, 0, "SA_RINCON60167_", nickname="Special")
+        with patch("sonos_system_inspector.inventory", return_value=({235: service}, [account])):
+            result = account_inventory("192.0.2.1", "Sonos_test")
+        self.assertEqual(result["configured_account_count"], 1)
+        self.assertIsNone(result["accounts"][0]["account_uid"])
+
+    def test_private_output_permissions(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "report.json"
+            write_private(path, json.dumps({"ok": True}))
+            mode = stat.S_IMODE(path.stat().st_mode)
+            self.assertEqual(mode, 0o600)
+
+
+if __name__ == "__main__":
+    unittest.main()

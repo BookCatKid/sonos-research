@@ -103,11 +103,13 @@ finding a speaker in 102--317 ms. The speakers and LAN were therefore healthy.
 This means the observed long delay is not evidence that Sonos performs a secret,
 slow setup exchange that open-source controllers omit. It is the fixed timeout of
 the official scanner after its sends fail or are suppressed. The relevant gap in
-our code is nevertheless real: our current helper sends only one multicast request
-through the default interface and waits three seconds. It lacks the official
-per-interface multicast+broadcast fan-out, three-send retry schedule, passive
-advertisement listener, response aging, network-change restart, household-aware
-filter, and topology-driven system association.
+our original code was nevertheless real: it sent only one multicast request
+through the default interface. `sonos_discovery.py` now closes the immediate
+reliability gap with per-interface multicast+broadcast fan-out, a three-send retry
+schedule, deduplication, household-aware filtering, and topology-driven system
+association in `sonos_system_inspector.py`. Persistent passive advertisements,
+response aging, and network-change restarts remain work for a long-running
+coordinator rather than the one-shot CLI.
 
 Open-source controllers are not all less capable here. Current SoCo discovery also
 enumerates usable IPv4 interfaces and sends three `ZonePlayer:1` multicast requests

@@ -14,11 +14,11 @@ import re
 import socket
 import subprocess
 import threading
-import time
-import urllib.parse
 import xml.etree.ElementTree as ET
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
+
+from sonos_discovery import discover_one, parse_ssdp_headers
 
 
 SSDP_ADDRESS = ("239.255.255.250", 1900)
@@ -28,42 +28,11 @@ SALT = bytes.fromhex("1a01a731c96e9ebde8475182b274b70e")
 
 
 def parse_headers(packet: bytes) -> dict[str, str]:
-    text = packet.decode("iso-8859-1", errors="replace")
-    headers: dict[str, str] = {}
-    for line in text.split("\r\n")[1:]:
-        if ":" in line:
-            name, value = line.split(":", 1)
-            headers[name.strip().lower()] = value.strip()
-    return headers
+    return parse_ssdp_headers(packet)
 
 
 def discover(timeout: float = 3.0, *, requested_host: str | None = None) -> tuple[str, str]:
-    request = (
-        "M-SEARCH * HTTP/1.1\r\n"
-        "HOST: 239.255.255.250:1900\r\n"
-        'MAN: "ssdp:discover"\r\n'
-        "MX: 1\r\n"
-        "ST: urn:schemas-upnp-org:device:ZonePlayer:1\r\n\r\n"
-    ).encode("ascii")
-    deadline = time.monotonic() + timeout
-    with socket.socket(socket.AF_INET, socket.SOCK_DGRAM, socket.IPPROTO_UDP) as sock:
-        sock.settimeout(0.5)
-        sock.sendto(request, SSDP_ADDRESS)
-        while time.monotonic() < deadline:
-            try:
-                packet, address = sock.recvfrom(65535)
-            except socket.timeout:
-                continue
-            headers = parse_headers(packet)
-            household = headers.get("x-rincon-household", "")
-            location = headers.get("location", "")
-            host = urllib.parse.urlparse(location).hostname or address[0]
-            if requested_host and host != requested_host and address[0] != requested_host:
-                continue
-            if household and host:
-                return host, household
-    suffix = f" for {requested_host}" if requested_host else ""
-    raise RuntimeError(f"No Sonos SSDP response supplied X-RINCON-HOUSEHOLD{suffix}")
+    return discover_one(timeout, requested_host=requested_host)
 
 
 def local_ip_for(host: str) -> str:
