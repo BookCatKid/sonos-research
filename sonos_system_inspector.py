@@ -206,9 +206,10 @@ def fetch_player_path(host: str, raw_path: str, timeout: float = 8.0) -> bytes:
     parsed = urllib.parse.urlsplit(raw_path)
     if parsed.scheme or parsed.netloc:
         raise ValueError(f"Player description supplied an absolute URL: {raw_path!r}")
-    normalized = posixpath.normpath("/" + parsed.path.lstrip("/"))
-    if normalized.startswith("/../") or normalized == "/..":
+    decoded_path = urllib.parse.unquote(parsed.path)
+    if any(segment in {".", ".."} for segment in decoded_path.split("/")):
         raise ValueError(f"Player description supplied an invalid path: {raw_path!r}")
+    normalized = posixpath.normpath("/" + decoded_path.lstrip("/"))
     url = urllib.parse.urlunsplit(("http", f"{host}:1400", normalized, parsed.query, ""))
     opener = urllib.request.build_opener(_NoRedirect)
     with opener.open(url, timeout=timeout) as response:
@@ -720,6 +721,7 @@ def main() -> None:
     # GroupRenderingControl. Querying that service on a non-coordinator is a
     # harmless UPnP error, but avoiding it makes the report semantically clean.
     inspection_errors: list[dict[str, str]] = []
+    topology_seed_failed = False
     try:
         topology_response = local_soap(
             hosts[0],
@@ -733,6 +735,7 @@ def main() -> None:
             (topology_nodes[0].text or "") if topology_nodes else "<ZoneGroupState/>"
         )
     except Exception as error:
+        topology_seed_failed = True
         seed_topology = {"group_count": 0, "member_count": 0, "groups": []}
         inspection_errors.append(
             {"stage": "seed_topology", "error": f"{error.__class__.__name__}: {error}"}
@@ -749,7 +752,10 @@ def main() -> None:
     reports_by_host: dict[str, dict[str, Any]] = {}
     for host in hosts:
         try:
-            reports_by_host[host] = inspect_player(host, allow_group_reads=host in coordinator_hosts)
+            reports_by_host[host] = inspect_player(
+                host,
+                allow_group_reads=topology_seed_failed or host in coordinator_hosts,
+            )
         except Exception as error:
             reports_by_host[host] = {
                 "host": host,

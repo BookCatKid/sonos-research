@@ -130,6 +130,12 @@ class InspectorTests(unittest.TestCase):
                 fetch_player_path("192.0.2.1", "https://attacker.invalid/scpd.xml")
         opener.assert_not_called()
 
+    def test_player_fetch_rejects_encoded_traversal(self) -> None:
+        with patch("sonos_system_inspector.urllib.request.build_opener") as opener:
+            with self.assertRaises(ValueError):
+                fetch_player_path("192.0.2.1", "/xml/%2e%2e/private")
+        opener.assert_not_called()
+
     def test_special_account_without_numeric_uid_does_not_abort_inventory(self) -> None:
         service = Service(235, "Special", "https://example.test/smapi", "Anonymous", 0, {})
         account = Account(235, 0, "SA_RINCON60167_", nickname="Special")
