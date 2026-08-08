@@ -151,7 +151,6 @@ class EnvelopeTests(unittest.TestCase):
             {"username": "user", "password": "password"},
         )
 
-
 class ContentTransportTests(unittest.TestCase):
     def test_content_device_identity_uses_account_uid(self) -> None:
         self.assertEqual(
@@ -165,6 +164,29 @@ class ContentTransportTests(unittest.TestCase):
             desktop_content_object_id(apple, "recommendation:AbC/1"),
             "recommendation:AbC/1",
         )
+
+    def test_content_child_uses_account_scoped_household_and_propagates_it(self) -> None:
+        instance = client("AppLink")
+        session = DesktopBrowseSession(instance)
+        seen: list[str] = []
+
+        def metadata(request_client: SmapiClient, object_id: str, index: int, count: int):
+            del index, count
+            seen.append(request_client.household_id)
+            return {
+                "index": 0,
+                "count": 1,
+                "total": 1,
+                "items": [{"id": f"{object_id}:child", "kind": "mediaCollection"}],
+            }
+
+        with patch.object(SmapiClient, "get_metadata", metadata):
+            first = session.browse("libraryfolder:f.2", from_content_page=True)
+            session.browse(first["items"][0]["id"], from_content_page=True)
+
+        self.assertEqual(seen, ["Sonos_household_00000009", "Sonos_household_00000009"])
+        self.assertEqual(first["items"][0]["source_transport"], "content")
+        self.assertEqual(instance.household_id, "Sonos_household")
 
     def test_content_views_are_flattened_with_section_and_transport(self) -> None:
         rows = content_page_items(
@@ -525,6 +547,23 @@ class ProtocolFlowTests(unittest.TestCase):
         with patch.object(instance, "_request_with_refresh", side_effect=[fault, success]) as request:
             self.assertEqual(instance.get_metadata("root")["total"], 0)
         self.assertEqual(request.call_count, 2)
+
+    def test_get_metadata_retries_generic_provider_error_999(self) -> None:
+        instance = client("AppLink")
+        fault = SmapiFault(
+            "SOAP-ENV:Server",
+            "There was an error processing your request",
+            500,
+            {"customFaultDetail": {"SonosError": "999"}},
+        )
+        success = ET.fromstring(
+            f'<getMetadataResponse xmlns="{SMAPI_NS}"><getMetadataResult>'
+            '<index>0</index><count>0</count><total>0</total>'
+            '</getMetadataResult></getMetadataResponse>'
+        )
+        with patch.object(instance, "_request_with_refresh", side_effect=[fault, fault, success]) as request:
+            self.assertEqual(instance.get_metadata("curator:1558256919")["total"], 0)
+        self.assertEqual(request.call_count, 3)
 
 
 class ParserTests(unittest.TestCase):

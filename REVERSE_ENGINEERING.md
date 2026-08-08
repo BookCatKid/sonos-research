@@ -247,7 +247,6 @@ HTTP Headers
   Accept-Language: en-US
   X-Sonos-Controller-ID: controller UUID
   Authorization: Bearer <token> when capability bit 3 is set
-  X-Sonos-Device-Id: persistent controller MachineIdentifier
 
 SOAP Body
   getMetadata(id, index, count [, recursive])
@@ -317,16 +316,23 @@ renders each item's provider `imageUrl` as album art.
 The home-page request is only half of the desktop chooser. An official desktop
 log records root object `0` going through `SCContentSession`, followed by a
 selection of an actual provider collection from the JSON data going through
-ordinary SOAP `getMetadata`. Values such as Apple
-`00081024recommendation%3a...` and Amazon
-`10fe2064catalog%2fplaylists...` occur at the controller-local browse/SCUri
-boundary. They are routing identifiers, not provider object IDs. The native
-browse delegate removes that layer and passes the JSON `objectId` unchanged to
-SMAPI. Sending the local prefix to a provider was the cause of the SiriusXM
-"discriminator not established" failure. `DesktopBrowseSession` now preserves
-the raw provider ID. Query-string experiments against Apple's `/browse/v1`
-endpoint were ignored and returned the root again, while appending the child as
-a path returned HTTP 404.
+ordinary SOAP `getMetadata`. Two pieces of state cross that boundary:
+
+- the JSON `objectId` is passed to SMAPI unchanged; controller-local values such
+  as Apple `00081024recommendation%3a...` and Amazon
+  `10fe2064catalog%2fplaylists...` are routing wrappers, not provider IDs;
+- the SOAP `loginToken.householdId` remains the content session's account-scoped
+  OAuth device ID (`<household>_<AccountUID as eight lowercase hex digits>`),
+  rather than reverting to the bare household ID.
+
+Sending the local prefix caused the SiriusXM "discriminator not established"
+failure. Using the bare household ID caused Apple's
+`AuthTokenExpired / InvalidTokenException`: the identical token and child ID
+return successfully when the account-scoped ID is used. `DesktopBrowseSession`
+now preserves both the raw provider ID and the credential scope through every
+descendant and pagination request. Query-string experiments against Apple's
+`/browse/v1` endpoint were ignored and returned the root again, while appending
+the child as a path returned HTTP 404.
 
 The Play:1 firmware independently establishes the playback boundary. Ordinary
 `getMetadata`, `search`, and `getMediaMetadata` calls use the Bearer account token
@@ -394,13 +400,11 @@ sections. This proves the household credential is valid for modern Apple browse;
 it does not make that token valid for Apple's legacy SOAP browse operation.
 
 The Apple network child contract uses the raw provider object ID with SOAP
-`getMetadata`. A live request built that way still receives Apple's
-`AuthTokenExpired / InvalidTokenException`, as does `refreshAuthToken`, while the
-same stored token continues to return the authenticated REST home page. Apple's
-`getAppLink` response to the Windows desktop reports
-`DesktopNotSupportedMessage`, so renewal must be completed through a supported
-Sonos client. This is provider/account state after an exact native request, not a
-remaining transport-selection difference. Sonos Radio and SiriusXM roots also
+`getMetadata` and the account-scoped household identity described above. Live
+verification returns the account's 106 Library albums, then the album's playable
+tracks, without refreshing or replacing the stored token. Apple's `getAppLink`
+`DesktopNotSupportedMessage` belongs only to account setup/reauthorization and is
+unrelated to this already-linked browse path. Sonos Radio and SiriusXM roots also
 use their advertised content endpoints successfully. Apple and SiriusXM now also
 open their embedded first-level sections locally. A live SiriusXM request for
 the raw `favorites:library-filter-view-all` object succeeds and returns the
@@ -416,6 +420,27 @@ accounts with a per-account ceiling of 30 seconds, 300 opened collections, 5,000
 returned items, and depth 12. The checkpointed report is
 `analysis/music-service-tree-2026-08-02.json`.
 
+A second household-wide audit on 2026-08-07 used the corrected account-scoped
+content handoff and a 90-second budget per account. Its checkpoint is
+`analysis/music-service-tree-2026-08-07.json`. SiriusXM opened 239 collections
+and returned 3,205 items with zero errors; NRK opened 233/3,270, Sveriges Radio
+68/3,281, Sonos Radio 43/24,385, and myTuner 2/10,208, also with zero errors.
+Audible, Radio Paradise, and JazzGroove completed their finite trees with zero
+errors. One Amazon account completed with zero errors; the other recorded only
+provider read timeouts, and every failed playlist chunk succeeded when replayed
+unchanged.
+
+Apple opened 357 collections and returned 14,706 items in the longer targeted
+audit. Normal interactive requests proved all five Library branches and another
+level beneath each collection: 94 Artists, 106 Albums, 549 Songs, 6 Playlists,
+and 5 Recently Added entries. The stress crawl's sole Apple error was a generic
+`SonosError 999` after hundreds of requests; the identical curator request
+immediately succeeded and returned 175 children. The client now retries that
+specific transient response up to two times, just as it already does provider
+timeouts. Persistent faults are not hidden: both Pandora accounts still fail at
+the root, and CBC's Holidays container consistently returns CBC's own
+`WebRadioLineupWebClientError` with its server stack trace.
+
 The corrected implementation produced zero browse errors for SiriusXM, Audible,
 NRK Radio, Sveriges Radio, Sonos Radio, myTuner Radio, Radio Paradise, and
 JazzGroove.org. SiriusXM alone opened 79 collections and returned 1,150 items in
@@ -429,8 +454,7 @@ its time window. The audit also established three controller presentation rules:
   actions rather than `getMetadata` containers.
 
 After those fixes, the remaining recorded faults are provider-side: the two
-Pandora accounts fail authentication at their roots; Apple accepts its content
-root token but rejects legacy child requests; CBC's Holidays container returns
+Pandora accounts fail authentication at their roots; CBC's Holidays container returns
 its own `WebRadioLineupWebClientError`; and one Amazon playlist transiently timed
 out but succeeded immediately when requested again. These faults and their exact
 tree paths are retained in the report.

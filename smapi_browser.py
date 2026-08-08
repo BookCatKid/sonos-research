@@ -690,7 +690,11 @@ class SmapiClient:
     @staticmethod
     def _is_transient_fault(fault: SmapiFault) -> bool:
         combined = f"{fault.code} {fault.message}".lower()
-        return fault.http_status in {408, 429, 502, 503, 504} or any(
+        provider_detail = json.dumps(fault.detail, sort_keys=True).lower() if fault.detail is not None else ""
+        # Apple intermittently returns the generic SMAPI SonosError 999 for a
+        # valid collection and succeeds immediately on the identical request.
+        provider_retry = '"sonoserror": "999"' in provider_detail
+        return provider_retry or fault.http_status in {408, 429, 502, 503, 504} or any(
             marker in combined
             for marker in ("read timed out", "timed out reading", "temporarily unavailable", "try again")
         )
@@ -758,15 +762,15 @@ class SmapiClient:
         fields = {"id": object_id, "index": str(index), "count": str(count)}
         if recursive:
             fields["recursive"] = "true"
-        for attempt in range(2):
+        for attempt in range(3):
             try:
                 root = self._request_with_refresh("getMetadata", fields)
                 break
             except SmapiFault as fault:
-                if attempt or not self._is_transient_fault(fault):
+                if attempt == 2 or not self._is_transient_fault(fault):
                     raise
             except (TimeoutError, urllib.error.URLError):
-                if attempt:
+                if attempt == 2:
                     raise
         else:  # pragma: no cover - both retry exits are explicit
             raise RuntimeError("getMetadata retry exhausted")
@@ -1221,7 +1225,42 @@ class DesktopBrowseSession:
             if from_content_page
             else object_id
         )
-        page = self.client.get_metadata(smapi_id, index, count)
+        request_client = self.client
+        if from_content_page:
+            # Content-session objects are handed to SMAPI with the account's
+            # OAuth device identity as loginToken.householdId.  Returning to
+            # the bare household ID makes Apple accept /browse/v1 but reject
+            # every Library child as InvalidTokenException.
+            scoped_household_id = account_content_device_id(
+                self.client.household_id,
+                self.client.account,
+            )
+            request_client = SmapiClient(
+                self.client.service,
+                self.client.account,
+                scoped_household_id,
+                self.client.device_id,
+                self.client.zone_player_id,
+                self.client.player_host,
+                host_device_id=self.client.host_device_id,
+                controller_id=self.client.controller_id,
+                time_zone=self.client.time_zone,
+                explicit_content=self.client.explicit_content,
+                allow_credential_refresh=self.client.allow_credential_refresh,
+            )
+            request_client.session_id = self.client.session_id
+        try:
+            page = request_client.get_metadata(smapi_id, index, count)
+        finally:
+            if request_client is not self.client:
+                self.client.account = request_client.account
+                self.client.session_id = request_client.session_id
+        if from_content_page:
+            # Preserve the scoped credential choice through every subsequent
+            # collection and page beneath the content-session object.
+            for item in page.get("items", []):
+                if isinstance(item, dict):
+                    item["source_transport"] = "content"
         page.update(transport="smapi", requested_id=smapi_id)
         return page
 
