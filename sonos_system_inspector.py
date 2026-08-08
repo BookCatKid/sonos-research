@@ -41,6 +41,7 @@ RESEARCH_CONTROLLER_ROOT = REPOSITORY_ROOT / "research/controller/90.0-77070"
 REPOSITORY_CONTROLLER_FIXTURE = RESEARCH_CONTROLLER_ROOT / "fixture/drive_c"
 REPOSITORY_DECOMPILED_ROOT = RESEARCH_CONTROLLER_ROOT / "decompiled"
 REPOSITORY_INTEROP_ROOT = REPOSITORY_DECOMPILED_ROOT / "Sonos.SCLib.Interop"
+GENERATED_CONTROLLER_STATES = REPOSITORY_ROOT / "generated/controller-state/households"
 
 SENSITIVE_NAMES = {
     "accountkey",
@@ -685,6 +686,12 @@ def inspect_local_controller(
     return result
 
 
+def generated_controller_root(household_id: str) -> Path | None:
+    safe_household = re.sub(r"[^A-Za-z0-9_.-]", "_", household_id)
+    candidate = GENERATED_CONTROLLER_STATES / safe_household / "drive_c"
+    return candidate if candidate.exists() else None
+
+
 def capability_summary(players: list[dict[str, Any]]) -> dict[str, Any]:
     unique_actions: dict[str, dict[str, Any]] = {}
     models: dict[str, int] = {}
@@ -899,8 +906,13 @@ def main() -> None:
         except Exception as error:
             report["music"] = {"error": f"{error.__class__.__name__}: {error}"}
     if not args.skip_local:
+        selected_controller_root = (
+            args.controller_root.expanduser().resolve()
+            if args.controller_root
+            else generated_controller_root(household_id)
+        )
         report["local_controller"] = inspect_local_controller(
-            crossover_root=args.controller_root.expanduser().resolve() if args.controller_root else None,
+            crossover_root=selected_controller_root,
             decompiled_root=args.decompiled_root.expanduser().resolve() if args.decompiled_root else None,
             interop_root=args.interop_root.expanduser().resolve() if args.interop_root else None,
         )

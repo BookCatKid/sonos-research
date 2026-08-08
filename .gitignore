@@ -11,3 +11,6 @@ analysis/system-inspection.json
 analysis/system-inspection.md
 analysis/system-diff.json
 analysis/system-diff.md
+
+# Generated state contains real household, room, alarm, and controller IDs.
+/generated/

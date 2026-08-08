@@ -171,11 +171,24 @@ python3 sonos_system_inspector.py --host 192.168.1.51 \
 
 The default local-controller section reads only the checked-in research bundle,
 not files elsewhere on the developer's machine. `--skip-local` omits the section
-entirely. Regenerate the synthetic identity/application-cache fixtures with:
+entirely. Generate accurate controller state for every household currently
+reachable on the LAN with:
 
 ```sh
-python3 research/controller/generate_fixture.py
+python3 research/controller/generate_controller_state.py
+
+# Seed households directly when multicast discovery is unavailable
+python3 research/controller/generate_controller_state.py \
+  --host 192.168.1.51 --host 192.168.50.20
 ```
+
+Each household gets its own ignored `generated/controller-state/.../drive_c`
+tree containing the real household/Muse IDs, alarm-list version, alarms, rooms,
+program URIs, and metadata. One persistent generated controller UUID and the
+host's MAC identity are shared across those household trees, matching the
+official controller's identity lifecycle. The inspector automatically selects
+the generated tree matching the household it is currently inspecting;
+`--controller-root` remains available to override that selection.
 
 The private-mode outputs are written to `analysis/system-inspection.json` and
 `analysis/system-inspection.md`; both generated files are ignored by Git. No

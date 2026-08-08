@@ -2,5 +2,5 @@
 
 # Preserve vendored controller configuration evidence byte-for-byte, including
 # its original BOM/CRLF formatting. Synthetic runtime XML remains normal text.
-research/controller/**/fixture/**/*.config binary
-research/controller/**/fixture/**/*.conf binary
+research/controller/**/fixture/**/Sonos.Controller.Desktop.dll.config binary
+research/controller/**/fixture/**/anacapa.conf binary

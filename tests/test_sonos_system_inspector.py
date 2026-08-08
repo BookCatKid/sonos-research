@@ -12,6 +12,7 @@ from sonos_system_inspector import (
     account_inventory,
     action_risk,
     fetch_player_path,
+    generated_controller_root,
     inspect_local_controller,
     inspect_player,
     parse_device_description,
@@ -167,6 +168,15 @@ class InspectorTests(unittest.TestCase):
         self.assertTrue(result["files"]["application_cache"]["exists"])
         self.assertTrue(result["files"]["controller_identity"]["values_redacted"])
         self.assertIn("native_constants", result["hidden_surfaces"])
+
+    def test_generated_controller_root_is_selected_per_household(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            drive_c = root / "Sonos_household" / "drive_c"
+            drive_c.mkdir(parents=True)
+            with patch("sonos_system_inspector.GENERATED_CONTROLLER_STATES", root):
+                selected = generated_controller_root("Sonos_household")
+        self.assertEqual(selected, drive_c)
 
     def test_explicit_interop_root_is_used_instead_of_a_temp_path(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
