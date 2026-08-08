@@ -182,14 +182,22 @@ class LocalSoapFault(RuntimeError):
         return f"Local {self.action} failed with HTTP {self.http_status}{suffix}"
 
 
-def local_soap(host: str, path: str, service_type: str, action: str, fields: dict[str, str]) -> bytes:
+def local_soap(
+    host: str,
+    path: str,
+    service_type: str,
+    action: str,
+    fields: dict[str, str],
+    *,
+    timeout: float = 10,
+) -> bytes:
     envelope = ET.Element(f"{{{SOAP_ENV}}}Envelope")
     body = ET.SubElement(envelope, f"{{{SOAP_ENV}}}Body")
     operation = ET.SubElement(body, f"{{{service_type}}}{action}")
     for name, value in fields.items():
         ET.SubElement(operation, name).text = value
     payload = ET.tostring(envelope, encoding="utf-8", xml_declaration=True)
-    connection = http.client.HTTPConnection(host, 1400, timeout=10)
+    connection = http.client.HTTPConnection(host, 1400, timeout=timeout)
     connection.request(
         "POST",
         path,

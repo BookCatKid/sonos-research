@@ -29,6 +29,15 @@ actual provider collection then switches to the desktop's SMAPI child request
 using the provider's original object ID. The tab shows the transport used for
 every page.
 
+The **Add account** tab implements descriptor-driven onboarding independently of
+the official controller. It uses modern `getAppLink`, falls back to legacy
+`getDeviceLinkCode` for older DeviceLink services, and commits with the player's
+advertised `AddOAuthAccountX` or `AddAccountX` action. Authorization is separate
+from mutation: nothing is written until the GUI shows the exact household,
+service, player, and operation and the user confirms it. Provider credentials
+are never persisted by the GUI. Providers that only return a mobile-app deep
+link are reported as app-only rather than being given an invented browser flow.
+
 The command-line decoder works with either interpreter.
 
 For a non-GUI report:
@@ -88,6 +97,37 @@ current browser process, and retried. Decompilation of the active desktop call
 path confirmed that it also updates its in-memory account model rather than
 writing replacement credentials to a player. The option therefore does not
 modify household state.
+
+## Add a music-service account
+
+Use the GUI's **Add account** tab, or preview a provider's authorization contract
+from the command line:
+
+```sh
+# Read-only: prints a redacted link-session preview
+python3 sonos_account_onboarding.py --service-id 236
+
+# Opens the provider page, waits for you, then confirms and commits that same code
+python3 sonos_account_onboarding.py --service-id 236 --open-browser --commit
+```
+
+Anonymous and legacy username/password descriptors use `AddAccountX`; linked
+accounts use `AddOAuthAccountX`. The account type is the descriptor service ID
+encoded with the current player schema revision. A successful player response
+returns the new account UDN and optional provider nickname, after which the
+player replicates the account through the household.
+
+## Service status
+
+```sh
+python3 sonos_service_status.py
+```
+
+This reports Sonos's public status, degraded components, and unresolved
+incidents from the official Statuspage API. The controller's buried
+`DEBUG_FETCH_SERVICE_OUTAGES` action is only a compiled action identifier; its
+private target is not proven. The standalone command provides the safe,
+documented outage information rather than claiming that identifier is an API.
 
 `--crawl-all` walks collections breadth-first so every root branch is sampled
 before the crawler descends further. It paginates SMAPI results, preserves leaf

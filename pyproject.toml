@@ -1,8 +1,9 @@
 [project]
 name = "sonos-music"
 version = "0.1.0"
-description = "Add your description here"
+description = "Open standalone Sonos household and music-service tools"
 readme = "README.md"
+license = "GPL-3.0-or-later"
 requires-python = ">=3.13"
 dependencies = [
     "pyside6>=6.11.1",

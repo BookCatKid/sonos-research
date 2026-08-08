@@ -22,6 +22,13 @@ and cannot accidentally damage a household.
 4. **Snapshot comparison** — `sonos_system_diff.py` detects player, firmware,
    room, topology, account, service-catalog, credential-state, and capability
    changes offline.
+5. **Music-service account onboarding** — `sonos_account_onboarding.py` and the
+   GUI implement anonymous/credential, modern AppLink, and legacy DeviceLink
+   discovery plus explicit-confirmation `AddAccountX`/`AddOAuthAccountX`
+   commits. Link sessions are household-bound and credentials remain in memory.
+6. **Service status** — `sonos_service_status.py` provides the safe public
+   equivalent of the unproven native outage debug action using Sonos's official
+   Statuspage API.
 
 ## What the live household proves
 
@@ -57,14 +64,7 @@ without performing them. Record wizard names, required parameters, states, and
 presentation components. This maps official setup/recovery/lifecycle behavior
 without mutating speakers.
 
-### 4. Descriptor-driven account onboarding
-
-Implement anonymous, username/password, device-link, and app-link state machines,
-but keep `AddAccountX` and `AddOAuthAccountX` behind an explicit transaction
-preview showing household, provider, account identity, and exact player mutation.
-Test first with a disposable service/account.
-
-### 5. Setup and bonding transactions
+### 4. Setup and bonding transactions
 
 Recreate product add/join, stereo/Sub/surround bonding, and recovery only after the
 event coordinator can verify each transition and roll back partial changes. These

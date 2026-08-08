@@ -577,17 +577,51 @@ def inspect_local_controller(
         except ET.ParseError as error:
             result["hidden_surfaces"]["metrics"] = {"path": str(metrics), "error": str(error)}
     constant_file = Path("/tmp/sonos-interop-decompiled.MZAhPX/Sonos.SCLib.Interop/sclib.cs")
+    interop_root = constant_file.parent
     if constant_file.exists():
         text = constant_file.read_text(encoding="utf-8", errors="replace")
         groups = {
-            "content_debug": r"SCISETTING_CONTENT_DEBUG_[A-Z0-9_]+",
-            "receipt_debug": r"SCISETTING_RECEIPT_DEBUG_[A-Z0-9_]+",
-            "developer_options": r"SC_DEVOPT_[A-Z0-9_]+",
-            "experiments": r"SCI_EXPERIMENT(?:ALFEATURE)?_[A-Z0-9_]+",
-            "debug_actions": r"SC_ACTIONID_DEBUG_[A-Z0-9_]+",
+            # The word boundary excludes the prefix of generated SWIG getters
+            # (FOO_get), which previously created a fake trailing-underscore
+            # duplicate for every constant.
+            "content_debug": r"SCISETTING_CONTENT_DEBUG_[A-Z0-9_]+\b",
+            "receipt_debug": r"SCISETTING_RECEIPT_DEBUG_[A-Z0-9_]+\b",
+            "developer_options": r"SC_DEVOPT_[A-Z0-9_]+\b",
+            "experiments": r"SCI_EXPERIMENT(?:ALFEATURE)?_[A-Z0-9_]+\b",
+            "debug_actions": r"SC_ACTIONID_DEBUG_[A-Z0-9_]+\b",
         }
         result["hidden_surfaces"]["native_constants"] = {
             name: sorted(set(re.findall(pattern, text))) for name, pattern in groups.items()
+        }
+    token_manager = interop_root / "SCITokenManager.cs"
+    user_account = interop_root / "SCIUserAccount.cs"
+    if token_manager.exists():
+        text = token_manager.read_text(encoding="utf-8", errors="replace")
+        result["hidden_surfaces"]["first_party_identity"] = {
+            "token_purposes": sorted(set(re.findall(r"\b[A-Z][A-Z0-9_]*_PURPOSE\b", text))),
+            "source": str(token_manager),
+            "static_names_only": True,
+        }
+    if user_account.exists():
+        text = user_account.read_text(encoding="utf-8", errors="replace")
+        identity = result["hidden_surfaces"].setdefault("first_party_identity", {})
+        identity["roles"] = sorted(set(re.findall(r"^\s*(OWNER|ADMIN|UNKNOWN),?$", text, re.MULTILINE)))
+        identity["profile_methods"] = sorted(
+            set(re.findall(r"public virtual [^{\n]+\s+(getEmail|getId|getReleaseProgramType|getVerificationStatus|refreshUserProfileInfo|signOut)\(", text))
+        )
+    wizard_sources = [interop_root / "SCIHousehold.cs", interop_root / "SCISystem.cs"]
+    wizard_factories: list[dict[str, str]] = []
+    for source in wizard_sources:
+        if not source.exists():
+            continue
+        text = source.read_text(encoding="utf-8", errors="replace")
+        for name in sorted(set(re.findall(r"\b(create[A-Za-z0-9_]*Wizard(?:Action)?)\(", text))):
+            wizard_factories.append({"factory": name, "source": str(source)})
+    if wizard_factories:
+        result["hidden_surfaces"]["wizard_factories"] = {
+            "count": len(wizard_factories),
+            "factories": wizard_factories,
+            "static_names_only": True,
         }
     return result
 

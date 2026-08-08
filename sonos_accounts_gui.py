@@ -20,6 +20,7 @@ import json
 import os
 import queue
 import re
+import secrets
 import shutil
 import socket
 import subprocess
@@ -30,6 +31,7 @@ import traceback
 import tkinter
 import urllib.parse
 import urllib.request
+import webbrowser
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -50,6 +52,7 @@ from tkinter import ttk
 from typing import Any, Callable
 
 import smapi_browser as smapi
+import sonos_account_onboarding as onboarding
 
 try:
     from PIL import Image as PILImage
@@ -612,6 +615,8 @@ class SonosExplorerApp:
         self.browser_art_cache: dict[str, Any] = {}
         self.browser_art_pending: set[str] = set()
         self.browser_detail_image: Any = None
+        self.onboarding_services: dict[str, smapi.Service] = {}
+        self.onboarding_session: onboarding.LinkSession | None = None
         self.last_export: dict[str, Any] = {}
         self.busy = False
 
@@ -627,6 +632,12 @@ class SonosExplorerApp:
         self.browser_account_var = StringVar()
         self.browser_path_var = StringVar(value="Load browser accounts to begin")
         self.browser_transport_var = StringVar(value="")
+        self.onboarding_service_var = StringVar()
+        self.onboarding_auth_var = StringVar(value="Load services to inspect their account flow")
+        self.onboarding_username_var = StringVar()
+        self.onboarding_password_var = StringVar()
+        self.onboarding_nickname_var = StringVar()
+        self.onboarding_url_var = StringVar()
 
         self.ui_queue: queue.Queue[tuple[str, Any]] = queue.Queue()
         self._configure_styles()
@@ -751,6 +762,7 @@ class SonosExplorerApp:
 
         self._build_services_tab()
         self._build_accounts_tab()
+        self._build_add_account_tab()
         self._build_browser_tab()
         self._build_json_tab()
         self._build_log_tab()
@@ -846,6 +858,63 @@ class SonosExplorerApp:
         self.account_details = self._make_text(details_frame)
         self.account_details.pack(fill="both", expand=True)
         self._set_text(self.account_details, "Run account inspection, then select an instance.")
+
+    def _build_add_account_tab(self) -> None:
+        tab = ttk.Frame(self.notebook, style="Panel.TFrame", padding=18)
+        self.notebook.add(tab, text="Add account")
+        tab.columnconfigure(1, weight=1)
+
+        ttk.Label(tab, text="Music service", style="Panel.TLabel").grid(row=0, column=0, sticky="w", padx=(0, 12), pady=6)
+        self.onboarding_service_combo = ttk.Combobox(
+            tab, textvariable=self.onboarding_service_var, state="readonly"
+        )
+        self.onboarding_service_combo.grid(row=0, column=1, sticky="ew", pady=6)
+        self.onboarding_load_button = ttk.Button(
+            tab, text="Load services", style="Secondary.TButton", command=self.load_onboarding_services
+        )
+        self.onboarding_load_button.grid(row=0, column=2, padx=(10, 0), pady=6)
+
+        ttk.Label(tab, text="Flow", style="Panel.TLabel").grid(row=1, column=0, sticky="nw", padx=(0, 12), pady=6)
+        ttk.Label(tab, textvariable=self.onboarding_auth_var, style="Muted.TLabel", wraplength=760).grid(
+            row=1, column=1, columnspan=2, sticky="w", pady=6
+        )
+
+        ttk.Label(tab, text="Username", style="Panel.TLabel").grid(row=2, column=0, sticky="w", padx=(0, 12), pady=6)
+        self.onboarding_username_entry = ttk.Entry(tab, textvariable=self.onboarding_username_var)
+        self.onboarding_username_entry.grid(row=2, column=1, columnspan=2, sticky="ew", pady=6)
+        ttk.Label(tab, text="Password", style="Panel.TLabel").grid(row=3, column=0, sticky="w", padx=(0, 12), pady=6)
+        self.onboarding_password_entry = ttk.Entry(tab, textvariable=self.onboarding_password_var, show="•")
+        self.onboarding_password_entry.grid(row=3, column=1, columnspan=2, sticky="ew", pady=6)
+        ttk.Label(tab, text="Nickname", style="Panel.TLabel").grid(row=4, column=0, sticky="w", padx=(0, 12), pady=6)
+        ttk.Entry(tab, textvariable=self.onboarding_nickname_var).grid(
+            row=4, column=1, columnspan=2, sticky="ew", pady=6
+        )
+
+        actions = ttk.Frame(tab, style="Panel.TFrame")
+        actions.grid(row=5, column=0, columnspan=3, sticky="ew", pady=(14, 10))
+        self.onboarding_start_button = ttk.Button(
+            actions, text="Start provider sign-in", style="Accent.TButton", command=self.begin_account_onboarding
+        )
+        self.onboarding_start_button.pack(side=LEFT)
+        self.onboarding_commit_button = ttk.Button(
+            actions, text="Commit authorized account", style="Secondary.TButton", command=self.commit_account_onboarding
+        )
+        self.onboarding_commit_button.pack(side=LEFT, padx=(8, 0))
+
+        ttk.Label(tab, text="Provider URL", style="Panel.TLabel").grid(row=6, column=0, sticky="nw", padx=(0, 12), pady=6)
+        url_entry = ttk.Entry(tab, textvariable=self.onboarding_url_var, state="readonly")
+        url_entry.grid(row=6, column=1, columnspan=2, sticky="ew", pady=6)
+        ttk.Label(
+            tab,
+            text=(
+                "Nothing is written to the speakers until Commit. The confirmation names the exact household, "
+                "service, and UPnP operation. Provider credentials are never saved by this GUI."
+            ),
+            style="Muted.TLabel",
+            wraplength=840,
+        ).grid(row=7, column=0, columnspan=3, sticky="w", pady=(16, 0))
+
+        self.onboarding_service_combo.bind("<<ComboboxSelected>>", self._onboarding_service_selected)
 
     def _build_browser_tab(self) -> None:
         tab = ttk.Frame(self.notebook, style="Panel.TFrame", padding=10)
@@ -1068,6 +1137,9 @@ class SonosExplorerApp:
             self.services_button,
             self.accounts_button,
             self.run_all_button,
+            self.onboarding_load_button,
+            self.onboarding_start_button,
+            self.onboarding_commit_button,
             self.browser_load_button,
             self.browser_back_button,
             self.browser_previous_button,
@@ -1075,6 +1147,7 @@ class SonosExplorerApp:
             self.browser_refresh_button,
         ):
             button.configure(state=state)
+        self.onboarding_service_combo.configure(state="readonly" if enabled else "disabled")
 
     def discover(self) -> None:
         try:
@@ -1214,6 +1287,192 @@ class SonosExplorerApp:
         )
         self.notebook.select(0)
 
+    def load_onboarding_services(self) -> None:
+        try:
+            host, household, timeout, _wait, _port = self._connection_values(require_household=False)
+        except SonosError as exc:
+            messagebox.showerror("Sonos Service Explorer", str(exc), parent=self.root)
+            return
+
+        def work() -> tuple[str, dict[int, smapi.Service]]:
+            actual_household = household
+            if not actual_household:
+                actual_household = discover_matching_player(host, timeout).household
+            return actual_household, smapi.parse_services(host)
+
+        self._run_task("Loading account-onboarding descriptors…", work, self._onboarding_services_complete)
+
+    def _onboarding_services_complete(self, result: tuple[str, dict[int, smapi.Service]]) -> None:
+        household, services = result
+        self.household_var.set(household)
+        self.onboarding_services = {
+            f"{service.name} — {service.service_id}": service
+            for service in sorted(services.values(), key=lambda value: value.name.lower())
+        }
+        labels = list(self.onboarding_services)
+        self.onboarding_service_combo.configure(values=labels)
+        if labels:
+            self.onboarding_service_var.set(labels[0])
+            self._onboarding_service_selected()
+        self.notebook.select(2)
+
+    def _onboarding_service_selected(self, _event: object | None = None) -> None:
+        service = self.onboarding_services.get(self.onboarding_service_var.get())
+        self.onboarding_session = None
+        self.onboarding_url_var.set("")
+        self.onboarding_username_var.set("")
+        self.onboarding_password_var.set("")
+        self.onboarding_nickname_var.set("")
+        if not service:
+            return
+        descriptions = {
+            "Anonymous": "Anonymous: no provider login. Commit creates the household service record.",
+            "UserId": "Legacy credentials: username is committed through AddAccountX.",
+            "UserIdPassword": "Legacy credentials: username/password are committed through AddAccountX.",
+            "DeviceLink": "Legacy device link: getAppLink is attempted, then getDeviceLinkCode as the official fallback.",
+            "AppLink": "Modern provider link: getAppLink chooses browser or provider-app authorization.",
+        }
+        self.onboarding_auth_var.set(descriptions.get(service.auth, f"Unsupported descriptor auth type: {service.auth}"))
+        credentials = service.auth in {"UserId", "UserIdPassword"}
+        self.onboarding_username_entry.configure(state="normal" if credentials else "disabled")
+        self.onboarding_password_entry.configure(
+            state="normal" if service.auth == "UserIdPassword" else "disabled"
+        )
+
+    def begin_account_onboarding(self) -> None:
+        service = self.onboarding_services.get(self.onboarding_service_var.get())
+        if not service:
+            messagebox.showerror("Sonos Service Explorer", "Load and select a music service first", parent=self.root)
+            return
+        if service.auth not in onboarding.AUTH_OPERATIONS:
+            messagebox.showerror(
+                "Sonos Service Explorer",
+                f"{service.name} uses unsupported authentication type {service.auth!r}",
+                parent=self.root,
+            )
+            return
+        try:
+            host, household, _timeout, _wait, _port = self._connection_values(require_household=True)
+        except SonosError as exc:
+            messagebox.showerror("Sonos Service Explorer", str(exc), parent=self.root)
+            return
+        if service.auth in {"Anonymous", "UserId", "UserIdPassword"}:
+            self.onboarding_auth_var.set(
+                f"{service.auth} is ready. Review the target and use Commit authorized account."
+            )
+            return
+
+        callback = f"sonos://addAccount?state={secrets.token_urlsafe(24)}"
+        self._run_task(
+            f"Requesting {service.name} authorization…",
+            lambda: onboarding.begin_link(host, household, service, callback_path=callback),
+            self._onboarding_link_ready,
+        )
+
+    def _onboarding_link_ready(self, session: onboarding.LinkSession) -> None:
+        self.onboarding_session = session
+        self.onboarding_url_var.set(session.registration_url or session.app_url)
+        if session.standalone_supported:
+            self.onboarding_auth_var.set(
+                f"{session.source_action} returned a browser link. Finish provider sign-in, then click Commit."
+            )
+            webbrowser.open(session.registration_url)
+        elif session.app_url:
+            self.onboarding_auth_var.set(
+                "The provider returned only an app deep link. This desktop cannot guarantee that callback; "
+                "use a compatible provider app or another service authorization path."
+            )
+        else:
+            self.onboarding_auth_var.set(
+                "The provider returned no standalone browser/device-link path. This is provider policy, not a LAN failure."
+            )
+
+    def commit_account_onboarding(self) -> None:
+        service = self.onboarding_services.get(self.onboarding_service_var.get())
+        if not service:
+            messagebox.showerror("Sonos Service Explorer", "Load and select a music service first", parent=self.root)
+            return
+        try:
+            host, household, _timeout, _wait, _port = self._connection_values(require_household=True)
+        except SonosError as exc:
+            messagebox.showerror("Sonos Service Explorer", str(exc), parent=self.root)
+            return
+        operation = onboarding.AUTH_OPERATIONS.get(service.auth)
+        if not operation:
+            messagebox.showerror(
+                "Sonos Service Explorer",
+                f"{service.name} uses unsupported authentication type {service.auth!r}",
+                parent=self.root,
+            )
+            return
+        if operation == "AddOAuthAccountX" and (
+            not self.onboarding_session or not self.onboarding_session.standalone_supported
+        ):
+            messagebox.showerror(
+                "Sonos Service Explorer",
+                "Start and finish a provider browser sign-in before committing this account.",
+                parent=self.root,
+            )
+            return
+        try:
+            actual_household = onboarding.player_household(host)
+        except (onboarding.OnboardingError, OSError, smapi.LocalSoapFault, ET.ParseError) as exc:
+            messagebox.showerror(
+                "Sonos Service Explorer",
+                f"Could not verify the target player's household: {exc}",
+                parent=self.root,
+            )
+            return
+        if actual_household != household:
+            messagebox.showerror(
+                "Sonos Service Explorer",
+                f"The selected player now belongs to {actual_household}, not {household}. Reload before adding an account.",
+                parent=self.root,
+            )
+            return
+        if not messagebox.askyesno(
+            "Commit music-service account",
+            f"Household: {actual_household}\nPlayer: {host}\nService: {service.name} ({service.service_id})\n"
+            f"Operation: {operation}\n\nThis writes a new account to every player in the household. Continue?",
+            parent=self.root,
+        ):
+            return
+        username = self.onboarding_username_var.get()
+        password = self.onboarding_password_var.get()
+        nickname = self.onboarding_nickname_var.get().strip()
+        session = self.onboarding_session
+
+        def work() -> onboarding.AddedAccount:
+            if operation == "AddAccountX":
+                added = onboarding.add_credentials(
+                    host,
+                    service,
+                    username,
+                    password,
+                    household_id=actual_household,
+                )
+            else:
+                assert session is not None
+                added = onboarding.commit_link(host, service, session)
+            if nickname:
+                onboarding.set_nickname(host, added.account_udn, nickname)
+                return onboarding.AddedAccount(added.service_id, added.service_name, added.account_udn, nickname)
+            return added
+
+        self._run_task(f"Adding {service.name} account…", work, self._onboarding_commit_complete)
+
+    def _onboarding_commit_complete(self, result: onboarding.AddedAccount) -> None:
+        self.onboarding_password_var.set("")
+        self.onboarding_session = None
+        self.onboarding_auth_var.set(
+            f"Added {result.service_name}: {result.nickname or result.account_udn}. Reload Accounts to verify replication."
+        )
+        messagebox.showinfo(
+            "Sonos Service Explorer",
+            f"{result.service_name} was added to the household.\n\nAccount UDN: {result.account_udn}",
+            parent=self.root,
+        )
+
     def load_browser_accounts(self) -> None:
         try:
             host, household, timeout, _wait, _port = self._connection_values(require_household=False)
@@ -1266,7 +1525,7 @@ class SonosExplorerApp:
         labels = list(contexts)
         self.browser_account_combo.configure(values=labels)
         self.browser_account_var.set(labels[0])
-        self.notebook.select(2)
+        self.notebook.select(3)
         self.root.after(0, self._browse_root)
 
     def _browser_account_selected(self, _event: object | None = None) -> None:
