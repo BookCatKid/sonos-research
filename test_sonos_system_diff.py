@@ -51,6 +51,16 @@ class DiffTests(unittest.TestCase):
         self.assertEqual(result["capabilities"]["added"], ["svc:1#NewThing"])
         self.assertTrue(result["topology"])
 
+    def test_satellite_bond_change_is_a_topology_change(self) -> None:
+        before = copy.deepcopy(BASE)
+        after = copy.deepcopy(BASE)
+        before["topology"]["groups"][0]["coordinator"] = "RINCON_A"
+        after["topology"]["groups"][0]["coordinator"] = "RINCON_A"
+        after["topology"]["groups"][0]["members"][0]["satellites"] = [
+            {"UUID": "RINCON_SUB"}
+        ]
+        self.assertTrue(compare_reports(before, after)["topology"])
+
 
 if __name__ == "__main__":
     unittest.main()

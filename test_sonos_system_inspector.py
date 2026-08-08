@@ -12,6 +12,7 @@ from sonos_system_inspector import (
     account_inventory,
     action_risk,
     inspect_player,
+    fetch_player_path,
     parse_device_description,
     parse_scpd,
     parse_zone_group_state,
@@ -100,14 +101,14 @@ class InspectorTests(unittest.TestCase):
     def test_inspection_never_calls_mutations_or_noncoordinator_group_reads(self) -> None:
         calls: list[str] = []
 
-        def fake_fetch(url: str, timeout: float = 8.0) -> bytes:
-            if url.endswith("device_description.xml"):
+        def fake_fetch(_host: str, path: str, timeout: float = 8.0) -> bytes:
+            if path.endswith("device_description.xml"):
                 return DEVICE_XML
-            if url.endswith("DeviceProperties1.xml"):
+            if path.endswith("DeviceProperties1.xml"):
                 return DEVICE_SCPD
-            if url.endswith("GroupRenderingControl1.xml"):
+            if path.endswith("GroupRenderingControl1.xml"):
                 return GROUP_SCPD
-            raise AssertionError(url)
+            raise AssertionError(path)
 
         def fake_soap(_host: str, _path: str, _service: str, action: str, _fields: dict[str, str]) -> bytes:
             calls.append(action)
@@ -115,13 +116,19 @@ class InspectorTests(unittest.TestCase):
                 return HOUSEHOLD_RESPONSE
             raise AssertionError(f"unexpected action {action}")
 
-        with patch("sonos_system_inspector.fetch", side_effect=fake_fetch), patch(
+        with patch("sonos_system_inspector.fetch_player_path", side_effect=fake_fetch), patch(
             "sonos_system_inspector.local_soap", side_effect=fake_soap
         ):
             result = inspect_player("192.0.2.1", allow_group_reads=False)
         self.assertEqual(calls, ["GetHouseholdID"])
         self.assertNotIn("SetZoneAttributes", result["reads"])
         self.assertNotIn("GetGroupVolume", result["reads"])
+
+    def test_player_fetch_rejects_absolute_scpd_url(self) -> None:
+        with patch("sonos_system_inspector.urllib.request.build_opener") as opener:
+            with self.assertRaises(ValueError):
+                fetch_player_path("192.0.2.1", "https://attacker.invalid/scpd.xml")
+        opener.assert_not_called()
 
     def test_special_account_without_numeric_uid_does_not_abort_inventory(self) -> None:
         service = Service(235, "Special", "https://example.test/smapi", "Anonymous", 0, {})

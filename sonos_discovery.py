@@ -4,9 +4,11 @@
 from __future__ import annotations
 
 import ipaddress
-import os
+import re
 import socket
+import struct
 import subprocess
+import sys
 import time
 import urllib.parse
 from dataclasses import dataclass
@@ -36,9 +38,10 @@ def parse_ssdp_headers(packet: bytes) -> dict[str, str]:
 def local_ipv4_addresses() -> list[str]:
     """Return usable IPv4 interface addresses without third-party packages."""
     found: set[str] = set()
+    interfaces = socket.if_nameindex()
     try:
-        for _, interface_name in socket.if_nameindex():
-            if os.uname().sysname == "Darwin":
+        if sys.platform == "darwin":
+            for _, interface_name in interfaces:
                 result = subprocess.run(
                     ["ipconfig", "getifaddr", interface_name],
                     capture_output=True,
@@ -48,7 +51,33 @@ def local_ipv4_addresses() -> list[str]:
                 value = result.stdout.strip()
                 if value:
                     found.add(value)
-    except (AttributeError, OSError):
+        elif sys.platform.startswith("linux"):
+            import fcntl
+
+            with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as probe:
+                for _, interface_name in interfaces:
+                    try:
+                        packed = fcntl.ioctl(
+                            probe.fileno(),
+                            0x8915,  # SIOCGIFADDR
+                            struct.pack("256s", interface_name[:15].encode("ascii", errors="ignore")),
+                        )
+                    except OSError:
+                        continue
+                    found.add(socket.inet_ntoa(packed[20:24]))
+        elif sys.platform == "win32":
+            result = subprocess.run(
+                ["ipconfig"], capture_output=True, text=True, check=False
+            )
+            found.update(
+                re.findall(r"IPv4[^:]*:\s*([0-9]+(?:\.[0-9]+){3})", result.stdout)
+            )
+        else:
+            result = subprocess.run(
+                ["ifconfig"], capture_output=True, text=True, check=False
+            )
+            found.update(re.findall(r"\binet\s+([0-9]+(?:\.[0-9]+){3})", result.stdout))
+    except (AttributeError, FileNotFoundError, OSError):
         pass
     try:
         for info in socket.getaddrinfo(socket.gethostname(), None, socket.AF_INET):

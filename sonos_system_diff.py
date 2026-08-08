@@ -24,12 +24,33 @@ def _action_id(action: dict[str, Any]) -> str:
     return f"{action.get('service_type')}#{action.get('action')}"
 
 
-def _group_shape(report: dict[str, Any]) -> list[tuple[str, ...]]:
-    groups = []
+def _group_shape(report: dict[str, Any]) -> list[dict[str, Any]]:
+    groups: list[dict[str, Any]] = []
     for group in report.get("topology", {}).get("groups", []):
-        members = sorted(str(member.get("UUID", "")) for member in group.get("members", []))
-        groups.append(tuple(members))
-    return sorted(groups)
+        members = []
+        for member in group.get("members", []):
+            members.append(
+                {
+                    "uuid": str(member.get("UUID", "")),
+                    "satellites": sorted(
+                        str(satellite.get("UUID", ""))
+                        for satellite in member.get("satellites", [])
+                    ),
+                }
+            )
+        groups.append(
+            {
+                "coordinator": str(group.get("coordinator", "")),
+                "members": sorted(members, key=lambda item: (item["uuid"], item["satellites"])),
+            }
+        )
+    return sorted(
+        groups,
+        key=lambda item: (
+            item["coordinator"],
+            tuple((member["uuid"], tuple(member["satellites"])) for member in item["members"]),
+        ),
+    )
 
 
 def _changed_fields(before: dict[str, Any], after: dict[str, Any], fields: tuple[str, ...]) -> dict[str, Any]:

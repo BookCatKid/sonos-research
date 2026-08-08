@@ -13,6 +13,7 @@ import argparse
 import hashlib
 import html
 import json
+import posixpath
 import re
 import time
 import urllib.parse
@@ -195,8 +196,22 @@ class ServiceDescription:
     scpd_url: str
 
 
-def fetch(url: str, timeout: float = 8.0) -> bytes:
-    with urllib.request.urlopen(url, timeout=timeout) as response:
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, req: Any, fp: Any, code: int, msg: str, headers: Any, newurl: str) -> None:
+        return None
+
+
+def fetch_player_path(host: str, raw_path: str, timeout: float = 8.0) -> bytes:
+    """Fetch a speaker-owned path without following redirects or authorities."""
+    parsed = urllib.parse.urlsplit(raw_path)
+    if parsed.scheme or parsed.netloc:
+        raise ValueError(f"Player description supplied an absolute URL: {raw_path!r}")
+    normalized = posixpath.normpath("/" + parsed.path.lstrip("/"))
+    if normalized.startswith("/../") or normalized == "/..":
+        raise ValueError(f"Player description supplied an invalid path: {raw_path!r}")
+    url = urllib.parse.urlunsplit(("http", f"{host}:1400", normalized, parsed.query, ""))
+    opener = urllib.request.build_opener(_NoRedirect)
+    with opener.open(url, timeout=timeout) as response:
         return response.read()
 
 
@@ -370,8 +385,7 @@ def _read_action_allowed(service_type: str, action: str) -> bool:
 
 
 def inspect_player(host: str, *, allow_group_reads: bool = True) -> dict[str, Any]:
-    base = f"http://{host}:1400"
-    details, services = parse_device_description(fetch(f"{base}/xml/device_description.xml"))
+    details, services = parse_device_description(fetch_player_path(host, "/xml/device_description.xml"))
     result: dict[str, Any] = {
         "host": host,
         "device": details,
@@ -382,7 +396,7 @@ def inspect_player(host: str, *, allow_group_reads: bool = True) -> dict[str, An
     for service in services:
         service_row: dict[str, Any] = asdict(service)
         try:
-            scpd = parse_scpd(fetch(urllib.parse.urljoin(base, service.scpd_url)))
+            scpd = parse_scpd(fetch_player_path(host, service.scpd_url))
             service_row.update(scpd)
         except Exception as error:
             service_row["description_error"] = f"{error.__class__.__name__}: {error}"
@@ -689,7 +703,7 @@ def main() -> None:
     parser.add_argument("--skip-local", action="store_true", help="skip installed-controller artifact inventory")
     args = parser.parse_args()
 
-    discovered = discover_players(args.timeout)
+    discovered = [] if args.host else discover_players(args.timeout)
     by_host = {player.host: player for player in discovered}
     hosts = list(dict.fromkeys(args.host or [player.host for player in discovered]))
     if not hosts:
@@ -705,15 +719,24 @@ def main() -> None:
     # did not independently answer SSDP, and tells us which devices coordinate
     # GroupRenderingControl. Querying that service on a non-coordinator is a
     # harmless UPnP error, but avoiding it makes the report semantically clean.
-    topology_response = local_soap(
-        hosts[0],
-        "/ZoneGroupTopology/Control",
-        ZONE_GROUP_TOPOLOGY,
-        "GetZoneGroupState",
-        {},
-    )
-    topology_nodes = descendants(ET.fromstring(topology_response), "ZoneGroupState")
-    seed_topology = parse_zone_group_state((topology_nodes[0].text or "") if topology_nodes else "<ZoneGroupState/>")
+    inspection_errors: list[dict[str, str]] = []
+    try:
+        topology_response = local_soap(
+            hosts[0],
+            "/ZoneGroupTopology/Control",
+            ZONE_GROUP_TOPOLOGY,
+            "GetZoneGroupState",
+            {},
+        )
+        topology_nodes = descendants(ET.fromstring(topology_response), "ZoneGroupState")
+        seed_topology = parse_zone_group_state(
+            (topology_nodes[0].text or "") if topology_nodes else "<ZoneGroupState/>"
+        )
+    except Exception as error:
+        seed_topology = {"group_count": 0, "member_count": 0, "groups": []}
+        inspection_errors.append(
+            {"stage": "seed_topology", "error": f"{error.__class__.__name__}: {error}"}
+        )
     coordinator_ids = {group.get("coordinator", "") for group in seed_topology.get("groups", [])}
     coordinator_hosts: set[str] = set()
     for group in seed_topology.get("groups", []):
@@ -747,6 +770,7 @@ def main() -> None:
         "schema_version": 1,
         "generated_at": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
         "read_only": True,
+        "inspection_errors": inspection_errors,
         "discovery": {
             "household_id": household_id,
             "players": [asdict(by_host[host]) if host in by_host else {"host": host, "targeted": True} for host in hosts],
