@@ -26,15 +26,20 @@ The safe standalone equivalent is `../sonos_service_status.py`, which uses Sonos
 
 The live service catalog currently contains 106 descriptors: 59 AppLink, 15 DeviceLink, and 32 Anonymous. The current household account records all use descriptor schema revision 7, producing account types such as Apple Music `204 * 256 + 7 = 52231`.
 
-The implemented state machine is:
+The reconstructed state machine is:
 
 1. Read `MusicServices.ListAvailableServices` and select the descriptor's `Policy/Auth` value.
 2. For AppLink, call the provider's unauthenticated `getAppLink` with household, platform, app name, and callback.
 3. For DeviceLink, try `getAppLink` and fall back to `getDeviceLinkCode` when the legacy provider rejects it.
 4. Open the provider's returned `regUrl`; retain its short-lived `linkCode` and hidden `linkDeviceId` only in memory.
-5. After user confirmation, call player `SystemProperties.AddOAuthAccountX` with the encoded account type, authorization code, callback, and OAuth device ID. The player performs `getDeviceAuthToken`, stores the returned token/key, assigns an account UDN, and replicates the account.
+5. For desktop browser authorization, poll provider `getDeviceAuthToken`, transform the returned user hash/tier as the native controller does, then call player `SystemProperties.AddOAuthAccountX` with the completed token/key form.
 6. Anonymous or legacy credential services use `AddAccountX` instead.
-7. Optionally call `SetAccountNicknameX`, then reload `ThirdPartyMediaServersX` to verify replication.
+7. On success, optionally call `SetAccountNicknameX`, then reload `ThirdPartyMediaServersX` to verify replication.
+
+Steps 1–4 and the anonymous form of step 6 are live-proven. The Spotify browser
+flow reaches a successful `getDeviceAuthToken`, but every tested S2 player rejects
+step 5 with UPnP 402. OAuth addition is therefore an incomplete research surface,
+not a working standalone feature. See `MUSIC_SERVICE_ACCOUNT_ONBOARDING_STATUS.md`.
 
 Live non-mutating probes established concrete provider variation:
 
@@ -79,7 +84,7 @@ No private scope, client secret, ownership endpoint, or token is embedded in the
 | Capability | Why it is difficult | OSS state / correct next layer |
 |---|---|---|
 | Music-service browse and search | Provider-specific SMAPI/content transports, account identity, refresh and presentation metadata | Implemented and recursively tested across configured accounts |
-| Account add/link | Provider-selected auth modes plus a player-side credential commit | Implemented with preview, browser/device-link fallback and explicit commit |
+| Account add/link | Provider-selected auth modes plus a player-side credential commit | Anonymous add/remove proven; OAuth discovery/exchange proven; OAuth player commit blocked by UPnP 402 |
 | Service outage display | Private action/feature gate and unknown presentation feed | Public official status API implemented; private feed not falsely claimed |
 | Event-sourced household state | Subscription renewal, topology churn, coordinator changes, `LastChange`, network transitions | Read-only snapshot exists; durable coordinator remains highest-priority controller work |
 | Dynamic provider UI/action engine | Provider-defined sections, forms, actions, multiple artwork layouts, progress/resume state | Browse sections/artwork implemented; arbitrary forms/actions remain |

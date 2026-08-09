@@ -20,7 +20,6 @@ import json
 import os
 import queue
 import re
-import secrets
 import shutil
 import socket
 import subprocess
@@ -1362,10 +1361,11 @@ class SonosExplorerApp:
             )
             return
 
-        callback = f"sonos://addAccount?state={secrets.token_urlsafe(24)}"
         self._run_task(
             f"Requesting {service.name} authorization…",
-            lambda: onboarding.begin_link(host, household, service, callback_path=callback),
+            lambda: onboarding.begin_link(
+                host, household, service, callback_path="/addAccount"
+            ),
             self._onboarding_link_ready,
         )
 
@@ -1433,7 +1433,13 @@ class SonosExplorerApp:
         if not messagebox.askyesno(
             "Commit music-service account",
             f"Household: {actual_household}\nPlayer: {host}\nService: {service.name} ({service.service_id})\n"
-            f"Operation: {operation}\n\nThis writes a new account to every player in the household. Continue?",
+            f"Operation: {operation}\n\n"
+            + (
+                "Experimental: current tested S2 players reject OAuth account commits with UPnP 402.\n\n"
+                if operation == "AddOAuthAccountX"
+                else ""
+            )
+            + "This writes a new account to every player in the household. Continue?",
             parent=self.root,
         ):
             return
