@@ -32,9 +32,47 @@ The implemented state machine is:
 2. For AppLink, call the provider's unauthenticated `getAppLink` with household, platform, app name, and callback.
 3. For DeviceLink, try `getAppLink` and fall back to `getDeviceLinkCode` when the legacy provider rejects it.
 4. Open the provider's returned `regUrl`; retain its short-lived `linkCode` and hidden `linkDeviceId` only in memory.
-5. After user confirmation, call player `SystemProperties.AddOAuthAccountX` with the encoded account type, authorization code, callback, and OAuth device ID. The player performs `getDeviceAuthToken`, stores the returned token/key, assigns an account UDN, and replicates the account.
+5. After user confirmation, the controller itself exchanges the authorized link code with the provider's `getDeviceAuthToken` (SMAPI) for the credential package — `authToken`, `privateKey`, and `userInfo` (`userIdHashCode`, `accountTier`, `nickname`). It then calls player `SystemProperties.AddOAuthAccountX` with every account value wrapped in the household `2:` envelope: `AccountToken`, `AccountKey`, `OAuthDeviceID` (the household ID), `UserIdHashCode`, and `AccountTier`, with `AuthorizationCode`/`RedirectURI` empty. The player stores the package, assigns an account UDN, and replicates the account. The player does **not** exchange the link code itself; sending it is rejected with UPnP error 402 (the cause of the original add failures).
 6. Anonymous or legacy credential services use `AddAccountX` instead.
 7. Optionally call `SetAccountNicknameX`, then reload `ThirdPartyMediaServersX` to verify replication.
+
+Step 7 is how the official app asks for the account nickname: `getDeviceAuthToken` returns `userInfo.nickname` — the provider's account-holder screen name (Spotify reports e.g. `BookCatKid`) — and the app pre-fills its nickname prompt with that value, applying the confirmed choice through `SetAccountNicknameX` immediately after `AddOAuthAccountX` (both calls visible back-to-back in the Windows-controller capture). The desktop GUI recreates this flow: after a linked-account commit it prompts for the nickname pre-filled from `userInfo.nickname` and applies the choice via `SetAccountNicknameX`; a nickname typed before committing always wins and skips the prompt.
+
+The commit contract was verified from a wire capture of the Windows controller
+(90.0 controller against an 86.8 firmware player) adding Spotify:
+`AccountType` `3079` (Spotify `12 * 256 + 7`), with `AccountToken`/`AccountKey`/
+`OAuthDeviceID`/`UserIdHashCode` all `2:`-enveloped, `OAuthDeviceID` decrypting to
+the household ID, `AuthorizationCode`/`RedirectURI` empty, and `AccountTier` `1`.
+The decrypted `AccountToken` is the raw provider access token (`BQBJ...`); the
+`AccountKey` is the provider's private key, which already carries its own
+`/<epoch_millis>` stamp (verified live: `getDeviceAuthToken` returns it that way)
+— it is stored verbatim, not re-stamped. The response `AccountUDN` decrypts to
+`SA_RINCON3079_X_#Svc3079-0-Token`, and the nickname operation that followed
+targeted the same decrypted UDN — the earlier "UDN mismatch" was an artifact of
+comparing encrypted blobs, not a derived identifier. `getDeviceAuthToken`
+supplies the token/key pair and userInfo; the player never exchanges the link
+code. Re-committing the same service account while its record is already in the
+household is rejected with UPnP 402 (verified live — the capture's own add was
+still the household's Spotify account, token included); the onboarding module
+detects that case and explains the duplicate instead of showing a bare error.
+One provider note from the same live exchange: Spotify's SMAPI rejects browse
+for `accountTier free` accounts ("Free tier not allowed to browse"), so a free
+Spotify account links but cannot browse content on Sonos.
+
+The single most important commit detail was cracked by replaying the capture's
+own credential package as a free test vector: the player accepts
+`UserIdHashCode` only in **base64** form.  The captured controller's stored
+hash was base64 (`Fi0ZRmHqNNKisKf+MNyOwQ==`), while the provider's
+`getDeviceAuthToken` currently returns the same 16-byte hash as hex
+(`1b406fc7825ba31162c8ed926084b4b5`).  Sending the raw hex enveloped is
+rejected with UPnP 402; converting the bytes to base64
+(`G0Bvx4JboxFiyO2SYIS0tQ==`) commits cleanly (verified live).  `commit_link`
+normalizes hex hashes to base64 before enveloping.  Replay also proved the
+envelope/headers (`s:encodingStyle`, `X-SONOS-TARGET-UDN`, `X-Sonos-Api-Key`)
+are irrelevant — a minimal `local_soap`-style POST is accepted.
+A live re-add after removal then succeeded with a fresh token
+(`AddOAuthAccountX` 200, account `SA_RINCON3079_X_#Svc3079-0-Token`, token
+accepted with `needs_reauth` false).
 
 Live non-mutating probes established concrete provider variation:
 
@@ -47,6 +85,15 @@ Live non-mutating probes established concrete provider variation:
 | Apple Music | AppLink | For this desktop identity, returns only encrypted/app-link markers and no standalone browser device link |
 
 Apple's result is a provider onboarding restriction. It does not affect browsing an already-linked Apple account and it is not evidence that the stored Apple credential is expired.
+
+Verified live against this household: Apple's `getAppLink` returns the identical stub
+(empty `callToAction` plus `appUrlEncrypt=true`, no `appUrl`/`regUrl`/`linkCode`) for
+**every** platform identity the controller advertises -- Windows, Macintosh, iOS, and
+Android. That marker advertises app-to-app linking only. Sonos's own desktop app cannot
+add Apple Music either; the account must first be linked from the Sonos mobile app
+(iOS/Android). `begin_link` detects this exact marker and raises an actionable error
+instead of returning a dead-end session, and the GUI explains the mobile-only
+requirement when Apple Music is selected.
 
 The desktop's own `ServiceAppInterop` confirms this boundary rather than merely suggesting it: `getAppInstallState()` always returns `UNKNOWN`, and `openApp()` accepts only `http://` or `https://` URLs and returns false for provider deep links. Its SCLib initialization declares desktop form factor, host hardware `Windows`, and interop scheme `sonos://`. The OSS request now uses those same desktop identity inputs. Therefore an Apple response with no browser/device link cannot be made functional by pretending the Windows desktop launches the Apple Music application—the official desktop does not do that either.
 
@@ -93,6 +140,7 @@ No private scope, client secret, ownership endpoint, or token is embedded in the
 
 ## Source evidence
 
+- A wire capture of the Windows controller adding Spotify proves the exact `AddOAuthAccountX` commit shape: all credential fields `2:`-enveloped, `OAuthDeviceID` = the household ID, empty `AuthorizationCode`/`RedirectURI`, `AccountTier` the record flag `1` (the provider's deprecated `userInfo.accountTier` string, e.g. `free`, must NOT be sent raw — verified live that it is rejected with UPnP 402).
 - Player SCPD and native decompilation prove the exact `AddAccountX` and `AddOAuthAccountX` fields.
 - `SCIServiceDescriptor.cs` proves the descriptor-level auth selection and both link-code and completed-token constructors.
 - `SCIAccountManager.cs`, `SCIUserAccount.cs`, and `SCITokenManager.cs` prove the first-party account model and token-purpose list.

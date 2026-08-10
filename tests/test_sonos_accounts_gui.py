@@ -5,6 +5,7 @@ import unittest
 from unittest.mock import Mock, call, patch
 
 from smapi_browser import Account, Service
+import sonos_account_onboarding as onboarding
 from sonos_accounts_gui import SonosExplorerApp
 
 
@@ -18,6 +19,36 @@ def _account(service_id: int = 37, serial: int = 1, **fields: str) -> Account:
 
 
 class AccountGuiTests(unittest.TestCase):
+    def test_apple_music_selection_explains_mobile_only_linking(self) -> None:
+        class Value:
+            def __init__(self, value: str = "") -> None:
+                self.value = value
+
+            def get(self) -> str:
+                return self.value
+
+            def set(self, value: str) -> None:
+                self.value = value
+
+        app = object.__new__(SonosExplorerApp)
+        apple = Service(204, "Apple Music", "https://example.invalid", "AppLink", 0, {})
+        app.onboarding_services = {"Apple Music — 204": apple}
+        app.onboarding_service_var = Value("Apple Music — 204")
+        app.onboarding_session = None
+        app.onboarding_url_var = Value()
+        app.onboarding_username_var = Value()
+        app.onboarding_password_var = Value()
+        app.onboarding_nickname_var = Value()
+        app.onboarding_auth_var = Value()
+        app.onboarding_username_entry = Mock()
+        app.onboarding_password_entry = Mock()
+
+        app._onboarding_service_selected()
+        note = app.onboarding_auth_var.get()
+        self.assertIn("app-to-app linking only", note)
+        self.assertIn("iOS/Android", note)
+        self.assertIn("no browser URL", note)
+
     def test_switching_services_clears_service_specific_values(self) -> None:
         class Value:
             def __init__(self, value: str = "") -> None:
@@ -130,7 +161,7 @@ class AccountGuiTests(unittest.TestCase):
         app._set_text = Mock()
         app._manage_account_selected()
         # Keyless records resolve for removal with the empty-key contract, and
-        # rename works through the 2:-encoded envelope (both verified live).
+        # rename works through the 2:-encoded envelope.
         app.manage_remove_button.configure.assert_called_with(state="normal")
         app.manage_rename_button.configure.assert_called_with(state="normal")
 
@@ -211,6 +242,71 @@ class AccountGuiTests(unittest.TestCase):
         self.assertEqual(rename.call_args.args[0], "192.0.2.1")
         self.assertEqual(rename.call_args.args[2], "New Name")
         self.assertEqual(rename.call_args.kwargs["household_id"], "Sonos_hh")
+
+    @staticmethod
+    def _commit_app() -> "SonosExplorerApp":
+        class Value:
+            def __init__(self) -> None:
+                self.value = ""
+
+            def get(self) -> str:
+                return self.value
+
+            def set(self, value: str) -> None:
+                self.value = value
+
+        app = object.__new__(SonosExplorerApp)
+        app.onboarding_password_var = Value()
+        app.onboarding_session = None
+        app.onboarding_auth_var = Value()
+        app._onboarding_commit_target = ("192.0.2.1", "Sonos_hh")
+        app.root = Mock()
+        app.root.after.side_effect = lambda _delay, fn, *args: fn()
+        return app
+
+    def test_commit_prompts_with_provider_nickname_prefilled(self) -> None:
+        app = self._commit_app()
+        added = onboarding.AddedAccount(
+            37, "SiriusXM", "SA_RINCON9479_X_#Svc9479-1-Token",
+            nickname="", provider_nickname="BookCatKid",
+        )
+        with patch("sonos_accounts_gui.simpledialog.askstring", return_value="BookCatKid") as ask, patch(
+            "sonos_accounts_gui.onboarding.set_nickname"
+        ) as rename, patch.object(
+            SonosExplorerApp, "_run_task", side_effect=lambda label, work, success: success(work())
+        ), patch("sonos_accounts_gui.messagebox.showinfo"):
+            app._onboarding_commit_complete(added)
+        # The official app flow: the provider's account name (Spotify's
+        # "BookCatKid") pre-fills the nickname prompt, and the choice is applied
+        # with SetAccountNicknameX right after the account commit.
+        ask.assert_called_once()
+        self.assertEqual(ask.call_args.kwargs["initialvalue"], "BookCatKid")
+        rename.assert_called_once_with(
+            "192.0.2.1", added.account_udn, "BookCatKid", household_id="Sonos_hh"
+        )
+
+    def test_commit_skips_prompt_when_nickname_was_chosen_in_advance(self) -> None:
+        app = self._commit_app()
+        added = onboarding.AddedAccount(
+            37, "SiriusXM", "SA_RINCON9479_X_#Svc9479-1-Token",
+            nickname="My Music", provider_nickname="BookCatKid",
+        )
+        with patch("sonos_accounts_gui.simpledialog.askstring") as ask, patch(
+            "sonos_accounts_gui.onboarding.set_nickname"
+        ) as rename, patch("sonos_accounts_gui.messagebox.showinfo"):
+            app._onboarding_commit_complete(added)
+        ask.assert_not_called()
+        rename.assert_not_called()
+
+    def test_commit_skips_prompt_when_provider_has_no_account_name(self) -> None:
+        app = self._commit_app()
+        added = onboarding.AddedAccount(37, "SiriusXM", "SA_RINCON9479_X_#Svc9479-1-Token")
+        with patch("sonos_accounts_gui.simpledialog.askstring") as ask, patch(
+            "sonos_accounts_gui.onboarding.set_nickname"
+        ) as rename, patch("sonos_accounts_gui.messagebox.showinfo"):
+            app._onboarding_commit_complete(added)
+        ask.assert_not_called()
+        rename.assert_not_called()
 
 
 if __name__ == "__main__":

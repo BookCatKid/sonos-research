@@ -3,15 +3,18 @@ from __future__ import annotations
 import unittest
 from unittest.mock import patch
 
-from smapi_browser import LocalSoapFault, Service
+from smapi_browser import Account, LocalSoapFault, Service
 from sonos_account_onboarding import (
+    DeviceAuthCredential,
     LinkSession,
+    OnboardingError,
     account_type,
     add_credentials,
     begin_link,
     commit_link,
     edit_account_md,
     edit_account_password,
+    get_device_auth_token,
     get_web_code,
     refresh_account_credentials,
     remove_account,
@@ -32,8 +35,19 @@ class AccountOnboardingTests(unittest.TestCase):
     def test_account_type_encodes_service_and_schema(self) -> None:
         self.assertEqual(account_type(204), 52231)
 
+    @patch(
+        "sonos_account_onboarding.get_device_auth_token",
+        return_value=DeviceAuthCredential(
+            auth_token="BQBJ-token",
+            private_key="priv-key",
+            user_id_hash_code="Fi0Z-hash",
+            nickname="BookCatKid",
+        ),
+    )
     @patch("sonos_account_onboarding.local_soap", side_effect=[HOUSEHOLD, SUCCESS])
-    def test_commit_link_uses_native_add_oauth_contract(self, soap) -> None:
+    def test_commit_link_uses_captured_add_oauth_contract(self, soap, _gdat) -> None:
+        from decode_third_party_media_servers import decrypt_blob
+
         session = LinkSession(204, "Apple Music", "AppLink", "Sonos_hh", 52231,
                               "https://login", "code", "device", "callback")
         added = commit_link("192.0.2.1", SERVICE, session)
@@ -41,9 +55,39 @@ class AccountOnboardingTests(unittest.TestCase):
         fields = soap.call_args_list[1].args[4]
         self.assertEqual(soap.call_args_list[1].args[3], "AddOAuthAccountX")
         self.assertEqual(fields["AccountType"], "52231")
-        self.assertEqual(fields["AuthorizationCode"], "code")
-        self.assertEqual(fields["OAuthDeviceID"], "device")
-        self.assertEqual(fields["RedirectURI"], "callback")
+        # Every account value is wrapped in the household 2: envelope and the
+        # authorization code / redirect URI stay empty -- the provider
+        # credential package is what is installed.
+        self.assertEqual(fields["AuthorizationCode"], "")
+        self.assertEqual(fields["RedirectURI"], "")
+        self.assertEqual(fields["AccountTier"], "1")
+        self.assertEqual(decrypt_blob(fields["AccountToken"], "Sonos_hh"), b"BQBJ-token")
+        # The provider's key already carries its own epoch stamp, so it is
+        # enveloped verbatim.
+        self.assertEqual(decrypt_blob(fields["AccountKey"], "Sonos_hh"), b"priv-key")
+        self.assertEqual(decrypt_blob(fields["OAuthDeviceID"], "Sonos_hh"), b"Sonos_hh")
+        self.assertEqual(decrypt_blob(fields["UserIdHashCode"], "Sonos_hh"), b"Fi0Z-hash")
+        # The link code itself is exchanged with the provider first, never sent
+        # to the player (which rejects it with UPnP 402).
+        _gdat.assert_called_once_with("192.0.2.1", "Sonos_hh", SERVICE, "code", "device")
+
+    @patch(
+        "sonos_account_onboarding.get_device_auth_token",
+        return_value=DeviceAuthCredential(
+            auth_token="BQBJ-token", private_key="priv-key", nickname="BookCatKid"
+        ),
+    )
+    @patch("sonos_account_onboarding.local_soap", side_effect=[HOUSEHOLD, SUCCESS])
+    def test_commit_link_surfaces_provider_nickname_for_prefill(self, soap, _gdat) -> None:
+        session = LinkSession(204, "Apple Music", "AppLink", "Sonos_hh", 52231,
+                              "https://login", "code", "device", "callback")
+        added = commit_link("192.0.2.1", SERVICE, session)
+        # The provider's userInfo.nickname (the account holder's screen name)
+        # is surfaced separately so the controller can pre-fill its nickname
+        # prompt with it; the player's own stored nickname comes back from
+        # AddOAuthAccountX unchanged.
+        self.assertEqual(added.provider_nickname, "BookCatKid")
+        self.assertEqual(added.nickname, "Person")
 
     def test_link_for_wrong_service_is_rejected_before_network(self) -> None:
         session = LinkSession(37, "SiriusXM", "AppLink", "Sonos_hh", account_type(37),
@@ -69,6 +113,118 @@ class AccountOnboardingTests(unittest.TestCase):
                               "dangerous://login", "code")
         self.assertFalse(session.standalone_supported)
 
+    @patch(
+        "sonos_account_onboarding.get_device_auth_token",
+        return_value=DeviceAuthCredential(auth_token="BQBJ-token", private_key="priv-key"),
+    )
+    @patch("sonos_account_onboarding.local_soap", side_effect=[HOUSEHOLD, SUCCESS])
+    def test_commit_link_omits_empty_user_id_hash(self, soap, _gdat) -> None:
+        # Providers whose getDeviceAuthToken returns no userIdHashCode must not
+        # produce an enveloped empty blob; the field is simply left empty.
+        session = LinkSession(204, "Apple Music", "AppLink", "Sonos_hh", 52231,
+                              "https://login", "code")
+        commit_link("192.0.2.1", SERVICE, session)
+        fields = soap.call_args_list[1].args[4]
+        self.assertEqual(fields["UserIdHashCode"], "")
+        self.assertEqual(fields["AccountTier"], "1")
+
+    @patch(
+        "sonos_account_onboarding.get_device_auth_token",
+        return_value=DeviceAuthCredential(
+            auth_token="BQBJ-token",
+            private_key="priv-key/1786401533373",
+            user_id_hash_code="1b406fc7825ba31162c8ed926084b4b5",
+            nickname="BookCatKid",
+        ),
+    )
+    @patch("sonos_account_onboarding.local_soap", side_effect=[HOUSEHOLD, SUCCESS])
+    def test_commit_link_converts_hex_user_id_hash_to_base64(self, soap, _gdat) -> None:
+        # Verified live by replaying the captured Spotify commit: the player
+        # accepts UserIdHashCode only as base64.  The provider currently
+        # returns the hash as hex (32 hex chars); the same bytes committed as
+        # base64 return 200 while the raw hex form is rejected with 402.
+        from decode_third_party_media_servers import decrypt_blob
+
+        session = LinkSession(204, "Apple Music", "AppLink", "Sonos_hh", 52231,
+                              "https://login", "code")
+        commit_link("192.0.2.1", SERVICE, session)
+        fields = soap.call_args_list[1].args[4]
+        stored_hash = decrypt_blob(fields["UserIdHashCode"], "Sonos_hh").decode()
+        self.assertEqual(stored_hash, "G0Bvx4JboxFiyO2SYIS0tQ==")
+
+    @patch(
+        "sonos_account_onboarding.get_device_auth_token",
+        return_value=DeviceAuthCredential(
+            auth_token="BQBJ-token",
+            private_key="priv-key/1786401533373",
+            user_id_hash_code="1b406fc7825ba31162c8ed926084b4b5",
+            nickname="BookCatKid",
+        ),
+    )
+    @patch("sonos_account_onboarding.local_soap", side_effect=[HOUSEHOLD, SUCCESS])
+    def test_commit_link_always_commits_record_flag_tier(self, soap, _gdat) -> None:
+        # The provider's deprecated userInfo.accountTier string (``free``/
+        # ``premium``/``trial``) must never reach the player -- sending it raw is
+        # rejected with UPnP 402.  The player's AccountTier is a record flag, so
+        # the commit always sends ``1``.
+        session = LinkSession(204, "Apple Music", "AppLink", "Sonos_hh", 52231,
+                              "https://login", "code")
+        commit_link("192.0.2.1", SERVICE, session)
+        fields = soap.call_args_list[1].args[4]
+        self.assertEqual(fields["AccountTier"], "1")
+        # The provider key already carries its epoch stamp; it is stored verbatim.
+        from decode_third_party_media_servers import decrypt_blob
+
+        self.assertEqual(
+            decrypt_blob(fields["AccountKey"], "Sonos_hh"),
+            b"priv-key/1786401533373",
+        )
+
+    @patch(
+        "sonos_account_onboarding.get_device_auth_token",
+        side_effect=OnboardingError("the link code may have expired"),
+    )
+    @patch("sonos_account_onboarding.local_soap", return_value=HOUSEHOLD)
+    def test_commit_link_failed_exchange_never_mutates_player(self, soap, _gdat) -> None:
+        # If the provider exchange fails, the player must not be touched: only
+        # the read-only GetHouseholdID check runs, never AddOAuthAccountX.
+        session = LinkSession(204, "Apple Music", "AppLink", "Sonos_hh", 52231,
+                              "https://login", "code")
+        with self.assertRaisesRegex(Exception, "link code may have expired"):
+            commit_link("192.0.2.1", SERVICE, session)
+        self.assertEqual(soap.call_count, 1)
+        self.assertEqual(soap.call_args.args[3], "GetHouseholdID")
+
+    @patch(
+        "sonos_account_onboarding.get_device_auth_token",
+        return_value=DeviceAuthCredential(auth_token="BQBJ-token", private_key="priv-key"),
+    )
+    @patch(
+        "sonos_account_onboarding.inventory",
+        return_value=(
+            {},
+            [Account(12, 50, "SA_RINCON3079_X_#Svc3079-0-Token", username="X_#Svc3079-0-Token", nickname="Spotify 50")],
+        ),
+    )
+    @patch(
+        "sonos_account_onboarding.local_soap",
+        side_effect=[
+            HOUSEHOLD,
+            LocalSoapFault("AddOAuthAccountX", 500, "s:Client", "UPnPError", upnp_code=402),
+        ],
+    )
+    def test_commit_link_explains_existing_duplicate_account(self, soap, _inv, _gdat) -> None:
+        # Verified live: re-committing the same Spotify user while its record is
+        # already in the household is rejected with UPnP 402; the player stores
+        # the capture's own token as the account.  The fault is translated into
+        # an actionable duplicate-account message instead of a bare error.
+        session = LinkSession(12, "Spotify", "AppLink", "Sonos_hh", account_type(12),
+                              "https://login", "code")
+        spotify = Service(12, "Spotify", "https://example.invalid", "AppLink", 0, {})
+        with self.assertRaisesRegex(Exception, "already linked.*Spotify 50.*Remove the existing account"):
+            commit_link("192.0.2.1", spotify, session)
+        self.assertEqual(soap.call_args_list[1].args[3], "AddOAuthAccountX")
+
     @patch("sonos_account_onboarding._client")
     def test_devicelink_falls_back_to_legacy_link_code(self, make_client) -> None:
         import xml.etree.ElementTree as ET
@@ -88,16 +244,103 @@ class AccountOnboardingTests(unittest.TestCase):
         self.assertEqual(session.link_code, "short-code")
 
     @patch("sonos_account_onboarding._client")
-    def test_applink_without_browser_path_is_reported_not_invented(self, make_client) -> None:
+    def test_applink_app_only_marker_raises_actionable_error(self, make_client) -> None:
         import xml.etree.ElementTree as ET
 
+        # Apple Music returns exactly this stub for every platform identity: an
+        # encrypted app-link marker with no browser/device-link path.
         make_client.return_value._request.return_value = ET.fromstring(
-            "<Envelope><getAppLinkResult><appUrlEncrypt>true</appUrlEncrypt>"
-            "</getAppLinkResult></Envelope>"
+            "<Envelope><getAppLinkResult><callToAction />"
+            "<appUrlEncrypt>true</appUrlEncrypt></getAppLinkResult></Envelope>"
+        )
+        with self.assertRaisesRegex(Exception, "app-to-app linking only.*Sonos mobile app"):
+            begin_link("192.0.2.1", "Sonos_hh", SERVICE)
+
+    @patch("sonos_account_onboarding._client")
+    def test_applink_with_real_app_url_is_still_usable(self, make_client) -> None:
+        import xml.etree.ElementTree as ET
+
+        # A provider that actually returns an appUrl keeps the app-link path;
+        # the stub detection must not reject a genuinely returned app URL.
+        make_client.return_value._request.return_value = ET.fromstring(
+            "<Envelope><getAppLinkResult><appUrl>apple-music://authorize</appUrl>"
+            "<appUrlEncrypt>true</appUrlEncrypt></getAppLinkResult></Envelope>"
+        )
+        session = begin_link("192.0.2.1", "Sonos_hh", SERVICE)
+        self.assertEqual(session.app_url, "apple-music://authorize")
+
+    @patch("sonos_account_onboarding._client")
+    def test_devicelink_app_only_marker_still_falls_back_to_link_code(self, make_client) -> None:
+        import xml.etree.ElementTree as ET
+
+        # A DeviceLink service whose getAppLink returns the app-only marker must
+        # not raise: it keeps the legacy getDeviceLinkCode fallback contract.
+        legacy = Service(201, "Amazon Music", "https://example.invalid", "DeviceLink", 0, {})
+        make_client.return_value._request.side_effect = [
+            ET.fromstring(
+                "<Envelope><getAppLinkResult><callToAction />"
+                "<appUrlEncrypt>true</appUrlEncrypt></getAppLinkResult></Envelope>"
+            ),
+            ET.fromstring(
+                "<Envelope><getDeviceLinkCodeResult><regUrl>https://login.example/</regUrl>"
+                "<linkCode>short-code</linkCode></getDeviceLinkCodeResult></Envelope>"
+            ),
+        ]
+        session = begin_link("192.0.2.1", "Sonos_hh", legacy)
+        self.assertEqual(session.source_action, "getDeviceLinkCode")
+        self.assertEqual(session.registration_url, "https://login.example/")
+
+    @patch("sonos_account_onboarding._client")
+    def test_applink_without_appurl_returns_plain_session(self, make_client) -> None:
+        import xml.etree.ElementTree as ET
+
+        # No appUrlEncrypt marker at all: fall back to the previous behavior so
+        # other providers keep returning their (empty) session for the caller
+        # to interpret.
+        make_client.return_value._request.return_value = ET.fromstring(
+            "<Envelope><getAppLinkResult><callToAction /></getAppLinkResult></Envelope>"
         )
         session = begin_link("192.0.2.1", "Sonos_hh", SERVICE)
         self.assertFalse(session.standalone_supported)
         self.assertEqual(session.registration_url, "")
+
+    @patch("sonos_account_onboarding._client")
+    def test_get_device_auth_token_exchanges_link_code_and_parses_user_info(self, make_client) -> None:
+        import xml.etree.ElementTree as ET
+
+        make_client.return_value._request.return_value = ET.fromstring(
+            "<Envelope><getDeviceAuthTokenResult><authToken>BQBJ-token</authToken>"
+            "<privateKey>priv-key</privateKey>"
+            "<userInfo><userIdHashCode>Fi0Z-hash</userIdHashCode><accountTier>1</accountTier>"
+            "<nickname>BookCatKid</nickname></userInfo></getDeviceAuthTokenResult></Envelope>"
+        )
+        with patch("sonos_account_onboarding.player_device_id", return_value="R_TrialZPSerialABC"):
+            credential = get_device_auth_token("192.0.2.1", "Sonos_hh", SERVICE, "code", "")
+        self.assertEqual(credential.auth_token, "BQBJ-token")
+        self.assertEqual(credential.private_key, "priv-key")
+        self.assertEqual(credential.user_id_hash_code, "Fi0Z-hash")
+        # The provider's deprecated accountTier string is deliberately NOT
+        # carried (it must never reach AddOAuthAccountX); nickname is kept.
+        self.assertFalse(hasattr(credential, "account_tier"))
+        self.assertEqual(credential.nickname, "BookCatKid")
+        action, fields = make_client.return_value._request.call_args.args
+        self.assertEqual(action, "getDeviceAuthToken")
+        self.assertEqual(fields["householdId"], "Sonos_hh")
+        self.assertEqual(fields["linkCode"], "code")
+        # Providers that omit linkDeviceId fall back to the controller's own
+        # R_TrialZPSerial (python-soco's exact fallback).
+        self.assertEqual(fields["linkDeviceId"], "R_TrialZPSerialABC")
+
+    @patch("sonos_account_onboarding._client")
+    def test_get_device_auth_token_rejects_incomplete_credential_pair(self, make_client) -> None:
+        import xml.etree.ElementTree as ET
+
+        make_client.return_value._request.return_value = ET.fromstring(
+            "<Envelope><getDeviceAuthTokenResult><authToken>only-token</authToken>"
+            "</getDeviceAuthTokenResult></Envelope>"
+        )
+        with self.assertRaisesRegex(Exception, "no authToken/privateKey pair"):
+            get_device_auth_token("192.0.2.1", "Sonos_hh", SERVICE, "code", "device")
 
     @patch("sonos_account_onboarding.local_soap", side_effect=[HOUSEHOLD, SUCCESS])
     def test_anonymous_service_commits_with_empty_key(self, soap) -> None:
@@ -171,7 +414,7 @@ class AccountOnboardingTests(unittest.TestCase):
         self.assertEqual(soap.call_args_list[1].args[3], "EditAccountPasswordX")
         fields = soap.call_args_list[1].args[4]
         # AccountID is the account key (Username0), not the full UDN: the player
-        # rejects the full UDN for edits (UPnP 806, verified live).
+        # rejects the full UDN for edits (UPnP 806).
         self.assertEqual(fields["AccountID"], "X_#Svc2311-1-Token")
         self.assertEqual(fields["NewAccountPassword"], "new-pass")
 

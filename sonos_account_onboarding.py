@@ -8,7 +8,9 @@ caller must explicitly commit the resulting authorization to SystemProperties.
 from __future__ import annotations
 
 import argparse
+import base64
 import json
+import re
 import secrets
 import urllib.error
 import urllib.parse
@@ -38,12 +40,14 @@ SYSTEM_PROPERTIES_PATH = "/SystemProperties/Control"
 DEVICE_PROPERTIES = "urn:schemas-upnp-org:service:DeviceProperties:1"
 DEVICE_PROPERTIES_PATH = "/DeviceProperties/Control"
 CURRENT_ACCOUNT_SCHEMA = 7
-#: Descriptor auth -> player commit action.  "Anonymous" remains mapped so
-#: begin_link can still validate/preview it; add_credentials commits an
-#: empty-key AddAccountX, which stores a keyless record that stays browsable and
-#: is removed again via the empty-key RemoveAccount contract (verified live).
-#: Rename works through SetAccountNicknameX once both values are wrapped in the
-#: household ``2:`` envelope (verified live on keyed and keyless records alike).
+
+#: AccountTier value committed with AddOAuthAccountX.  The player's field is
+#: numeric (SCPD type ``ui4``); the provider's userInfo.accountTier string
+#: (``free``/``premium``/``trial``) is rejected with UPnP 402.  ``1`` matches
+#: the captured Windows controller's commit for a free-tier Spotify account.
+#: Whether premium/trial accounts should commit a different value is not
+#: established by any capture so far.
+ACCOUNT_TIER = "1"
 AUTH_OPERATIONS = {
     "Anonymous": "AddAccountX",
     "UserId": "AddAccountX",
@@ -94,6 +98,33 @@ class AddedAccount:
     service_name: str
     account_udn: str
     nickname: str = ""
+    #: The provider's userInfo.nickname (the account holder's screen name as
+    #: reported by getDeviceAuthToken).  Informational only: the official app
+    #: pre-fills its nickname prompt with this and the user's choice is then
+    #: applied with SetAccountNicknameX -- the player never sees this value
+    #: inside AddOAuthAccountX.
+    provider_nickname: str = ""
+
+
+@dataclass(frozen=True)
+class DeviceAuthCredential:
+    """The provider credential package AddOAuthAccountX installs.
+
+    Obtained by the controller itself through the provider's SMAPI
+    ``getDeviceAuthToken`` after the user finishes the browser authorization.
+    The player does NOT exchange the link code; it receives this result.
+    """
+
+    auth_token: str
+    private_key: str
+    user_id_hash_code: str = ""
+    nickname: str = ""
+
+    # Note: the provider's userInfo.accountTier string (``free`` / ``premium`` /
+    # ``trial``) is deliberately NOT carried here -- the player's AccountTier
+    # field is numeric (SCPD type ``ui4``) and rejects the string with UPnP 402.
+    # The player stores a per-record flag (``0``/``1``), not the provider
+    # subscription level; see ACCOUNT_TIER for the committed value.
 
 
 def account_type(service_id: int, schema_revision: int = CURRENT_ACCOUNT_SCHEMA) -> int:
@@ -113,6 +144,30 @@ def _client(host: str, household_id: str, service: Service) -> SmapiClient:
         player_zone_id(host),
         host,
     )
+
+
+def _is_app_link_only_stub(value: Any) -> bool:
+    """Detect a provider's encrypted app-link marker with no browser path.
+
+    Apple Music's getAppLink returns only an empty ``callToAction`` and
+    ``appUrlEncrypt=true`` -- no ``appUrl``, ``regUrl``, or ``linkCode`` -- for
+    every platform identity.  That marker advertises app-to-app linking only,
+    so there is no standalone browser authorization this tool could open and
+    commit.  The official Sonos desktop app is limited to the same app-to-app
+    path.
+    """
+    if not isinstance(value, dict):
+        return False
+    authorize = value.get("authorizeAccount", value)
+    authorize = authorize if isinstance(authorize, dict) else {}
+    device_link = authorize.get("deviceLink", authorize)
+    device_link = device_link if isinstance(device_link, dict) else {}
+    has_browser_path = bool(device_link.get("regUrl") or device_link.get("linkCode"))
+    has_app_url = bool(authorize.get("appUrl") or value.get("appUrl"))
+    encrypted = str(
+        authorize.get("appUrlEncrypt", value.get("appUrlEncrypt", ""))
+    ).lower() == "true"
+    return encrypted and not has_browser_path and not has_app_url
 
 
 def _link_from_result(
@@ -180,9 +235,8 @@ def begin_link(
             "getAppLink",
             {
                 "householdId": household_id,
-                # Match the installed desktop's SCLib parameters. Its app
-                # interop reports UNKNOWN for native-app installation and only
-                # opens HTTP(S), so providers choose their desktop/browser path.
+                # Match the installed desktop controller's getAppLink request so
+                # providers select their desktop/browser authorization path.
                 "hardware": "Windows",
                 "osVersion": "Microsoft Windows NT 10.0.19045 64-bit",
                 "sonosAppName": "Sonos",
@@ -192,11 +246,25 @@ def begin_link(
             bearer_token="",
         )
         nodes = descendants(root, "getAppLinkResult")
-        session = _link_from_result(
-            service, household_id, callback_path, "getAppLink", element_value(nodes[0] if nodes else root)
-        )
+        value = element_value(nodes[0] if nodes else root)
+        session = _link_from_result(service, household_id, callback_path, "getAppLink", value)
+        # Only AppLink services hit the actionable app-only error: a DeviceLink
+        # service returning this stub must still fall back to getDeviceLinkCode.
+        if _is_app_link_only_stub(value) and service.auth != "DeviceLink":
+            raise OnboardingError(
+                f"{service.name} offers app-to-app linking only: getAppLink returned an "
+                "encrypted app-link marker (appUrlEncrypt=true) with no browser URL or "
+                "link code. Providers such as Apple Music restrict initial authorization "
+                "to the Sonos mobile app (iOS/Android); even the official Sonos desktop "
+                "app cannot add them. Link the account once from the Sonos phone app, "
+                "then this tool can browse, manage, and rename it like any other account."
+            )
         if session.standalone_supported or session.app_url or service.auth != "DeviceLink":
             return session
+    except OnboardingError:
+        # Our own actionable errors (e.g. the app-only marker) must not be
+        # mistaken for a rejected getAppLink and wrapped again.
+        raise
     except (RuntimeError, TimeoutError, urllib.error.URLError) as exc:
         # Legacy services commonly reject getAppLink.
         app_link_error = exc
@@ -230,7 +298,14 @@ def begin_link(
     return session
 
 
-def _parse_add_response(service: Service, response: bytes) -> AddedAccount:
+def _parse_add_response(service: Service, response: bytes, household_id: str = "") -> AddedAccount:
+    """Parse the player's AddAccountX/AddOAuthAccountX response.
+
+    The player returns the AccountUDN in the household ``2:`` envelope (the
+    same envelope as ThirdPartyMediaServersX).  With the household ID known the
+    UDN is decrypted to its canonical ``SA_RINCON...`` form so it matches the
+    account inventory; without it the raw value is preserved.
+    """
     import xml.etree.ElementTree as ET
 
     root = ET.fromstring(response)
@@ -239,6 +314,8 @@ def _parse_add_response(service: Service, response: bytes) -> AddedAccount:
     udn = (udn_nodes[0].text or "").strip() if udn_nodes else ""
     if not udn:
         raise OnboardingError("Player reported success but returned no AccountUDN")
+    if udn.startswith("2:") and household_id:
+        udn = decrypt_blob(udn, household_id).decode("utf-8")
     return AddedAccount(
         service.service_id,
         service.name,
@@ -275,8 +352,68 @@ def _require_household(host: str, expected_household: str) -> str:
     return actual_household
 
 
+def get_device_auth_token(
+    host: str,
+    household_id: str,
+    service: Service,
+    link_code: str,
+    link_device_id: str = "",
+) -> DeviceAuthCredential:
+    """Exchange an authorized link code for the provider credential package.
+
+    The controller performs this provider SMAPI call itself after the user
+    finishes the browser authorization.  The result -- authToken, privateKey,
+    and userInfo (userIdHashCode, accountTier, nickname) -- is what
+    AddOAuthAccountX then installs into the player; the player does not
+    exchange the link code itself.  AddOAuthAccountX receives these values as
+    ``2:``-enveloped fields with AuthorizationCode/RedirectURI empty and the
+    household ID as OAuthDeviceID.
+    """
+    client = _client(host, household_id, service)
+    root = client._request(
+        "getDeviceAuthToken",
+        {
+            "householdId": household_id,
+            "linkCode": link_code,
+            "linkDeviceId": link_device_id or player_device_id(host),
+        },
+        credential_mode="base",
+        bearer_token="",
+    )
+    nodes = descendants(root, "getDeviceAuthTokenResult")
+    value = element_value(nodes[0] if nodes else root)
+    result = value if isinstance(value, dict) else {}
+    user_info = result.get("userInfo", {})
+    user_info = user_info if isinstance(user_info, dict) else {}
+    token = str(result.get("authToken", "") or "")
+    key = str(result.get("privateKey", "") or "")
+    if not token or not key:
+        raise OnboardingError(
+            f"{service.name} getDeviceAuthToken returned no authToken/privateKey pair; "
+            "the link code may have expired or already been exchanged."
+        )
+    return DeviceAuthCredential(
+        auth_token=token,
+        private_key=key,
+        user_id_hash_code=str(user_info.get("userIdHashCode", "") or ""),
+        # The provider's screen name; the official app pre-fills the account
+        # nickname prompt with it (informational only, never sent to the player).
+        nickname=str(user_info.get("nickname", "") or ""),
+    )
+
+
 def commit_link(host: str, service: Service, session: LinkSession) -> AddedAccount:
-    """Commit an authorized provider link to the household's players."""
+    """Commit an authorized provider link to the household's players.
+
+    The player does not exchange the link code itself.  The controller first
+    calls the provider's ``getDeviceAuthToken`` to obtain the credential
+    package, then installs the result through ``AddOAuthAccountX`` with every
+    account value wrapped in the household ``2:`` envelope: AccountToken,
+    AccountKey (the provider's key, which already carries its own epoch stamp),
+    OAuthDeviceID (the household ID), and UserIdHashCode.  AuthorizationCode
+    and RedirectURI stay empty.  AccountTier is sent as the ACCOUNT_TIER
+    constant.
+    """
     if session.service_id != service.service_id:
         raise OnboardingError("Link session belongs to a different service")
     expected_account_type = account_type(service.service_id)
@@ -289,24 +426,95 @@ def commit_link(host: str, service: Service, session: LinkSession) -> AddedAccou
             f"{service.name} did not provide a standalone link code; its app-only authorization cannot be committed here"
         )
     _require_household(host, session.household_id)
-    response = local_soap(
+    credential = get_device_auth_token(
         host,
-        SYSTEM_PROPERTIES_PATH,
-        SYSTEM_PROPERTIES,
-        "AddOAuthAccountX",
-        {
-            "AccountType": str(expected_account_type),
-            "AccountToken": "",
-            "AccountKey": "",
-            "OAuthDeviceID": session.link_device_id,
-            "AuthorizationCode": session.link_code,
-            "RedirectURI": session.callback_path,
-            "UserIdHashCode": "",
-            "AccountTier": "0",
-        },
-        timeout=35,
+        session.household_id,
+        service,
+        session.link_code,
+        session.link_device_id,
     )
-    return _parse_add_response(service, response)
+    user_id_hash = (
+        encode_blob(_normalize_user_id_hash(credential.user_id_hash_code).encode("utf-8"), session.household_id)
+        if credential.user_id_hash_code
+        else ""
+    )
+    # The provider's privateKey already carries its own ``/<epoch_millis>``
+    # stamp, so the key is enveloped verbatim.  AccountTier is ACCOUNT_TIER.
+    try:
+        response = local_soap(
+            host,
+            SYSTEM_PROPERTIES_PATH,
+            SYSTEM_PROPERTIES,
+            "AddOAuthAccountX",
+            {
+                "AccountType": str(expected_account_type),
+                # Account values must be wrapped in the household 2: envelope;
+                # plaintext values are rejected (UPnP 402).
+                "AccountToken": encode_blob(credential.auth_token.encode("utf-8"), session.household_id),
+                "AccountKey": encode_blob(credential.private_key.encode("utf-8"), session.household_id),
+                "OAuthDeviceID": encode_blob(session.household_id.encode("utf-8"), session.household_id),
+                "AuthorizationCode": "",
+                "RedirectURI": "",
+                "UserIdHashCode": user_id_hash,
+                "AccountTier": ACCOUNT_TIER,
+            },
+            timeout=35,
+        )
+    except LocalSoapFault as exc:
+        translated = _translate_commit_fault(host, service, exc, session.household_id)
+        if translated is not None:
+            raise translated from exc
+        raise
+    added = _parse_add_response(service, response, session.household_id)
+    return AddedAccount(
+        added.service_id,
+        added.service_name,
+        added.account_udn,
+        added.nickname,
+        provider_nickname=credential.nickname,
+    )
+
+
+def _normalize_user_id_hash(user_id_hash_code: str) -> str:
+    """Return the player's required base64 form of the user-id hash.
+
+    The player accepts ``UserIdHashCode`` only in base64; a 32-character hex
+    value (as the provider currently returns) is converted, and any other form
+    passes through unchanged.
+    """
+    value = user_id_hash_code.strip()
+    if re.fullmatch(r"[0-9a-fA-F]{32}", value):
+        return base64.b64encode(bytes.fromhex(value)).decode("ascii")
+    return value
+
+
+def _translate_commit_fault(
+    host: str, service: Service, fault: LocalSoapFault, household_id: str
+) -> OnboardingError | None:
+    """Turn a player rejection of AddOAuthAccountX into an actionable error.
+
+    A UPnP 402 can have several causes (historically, a malformed
+    UserIdHashCode).  When the household already holds an account for this
+    service, a duplicate-add refusal is the most plausible one, so the
+    inventory is checked to point at the existing account instead of surfacing
+    a bare ``invalid arguments``.  Returns None when the fault cannot be
+    explained, so the caller re-raises the original fault unchanged.
+    """
+    if fault.upnp_code == 402:
+        try:
+            _services, accounts = inventory(host, household_id)
+        except Exception:
+            _services, accounts = {}, []
+        existing = [a for a in accounts if a.service_id == service.service_id]
+        if existing:
+            names = sorted({(a.nickname or a.username or a.serial) for a in existing})
+            return OnboardingError(
+                f"{service.name} is already linked to this household as "
+                f"{', '.join(map(str, names))}. The player most likely rejected the "
+                "duplicate commit (UPnP error 402: invalid arguments). Remove the "
+                "existing account first if you want to re-link it with fresh credentials."
+            )
+    return None
 
 
 def add_credentials(
@@ -322,7 +530,7 @@ def add_credentials(
     Anonymous descriptors are committed with an empty account ID: the player
     rejects any other value for them (UPnP error 402) and stores a keyless
     record.  Such records remain browsable and can be removed again with the
-    empty-key RemoveAccount contract (verified live).
+    empty-key RemoveAccount contract.
     """
     if service.auth not in {"Anonymous", "UserId", "UserIdPassword"}:
         raise OnboardingError(f"{service.name} requires {service.auth}; use begin_link instead")
@@ -349,17 +557,15 @@ def add_credentials(
 def set_nickname(host: str, account_udn: str, nickname: str, *, household_id: str) -> None:
     """Rename one configured household account.
 
-    Native contract (FUN_10037c5c0): SetAccountNicknameX takes AccountUDN and
+    Native contract (FUN_10037c5c0 / FUN_1004ae120 / FUN_100e610d0):
+    SetAccountNicknameX takes AccountUDN and
     AccountNickname, both wrapped in the household ``2:`` envelope (AES-128-CBC
     under the household-derived key, the same envelope as
-    ThirdPartyMediaServersX).  Sending plaintext values is rejected with UPnP
-    error 402; the encoded form is accepted.  The format was cracked from a
-    wire capture of the Windows controller (which renamed SiriusXM locally)
-    and verified live: ``SetAccountNicknameX`` returns 200 and the inventory
-    reflects the new nickname.  The account identifier may arrive in either
-    form: the plaintext ``SA_RINCON...`` UDN from the account inventory, or the
-    ``2:`` blob returned by AddAccountX/AddOAuthAccountX -- the latter is
-    decoded back to plaintext first so it is never double-encoded.
+    ThirdPartyMediaServersX); plaintext values are rejected with UPnP error
+    402.  The account identifier may arrive in either form: the plaintext
+    ``SA_RINCON...`` UDN from the account inventory, or the ``2:`` blob
+    returned by AddAccountX/AddOAuthAccountX -- the latter is decoded back to
+    plaintext first so it is never double-encoded.
     """
     if not account_udn:
         raise OnboardingError("An account UDN is required to rename an account")
@@ -391,12 +597,11 @@ def remove_account(host: str, service: Service, account_udn: str, *, household_i
 
     Native contract (FUN_100e60cb0 / FUN_1004abd20): RemoveAccount takes the
     encoded AccountType and the account key as AccountID.  Keyed accounts carry
-    the full ``SA_RINCON...`` UDN, which the player resolves for removal
-    (confirmed live: the GUI removed a keyed record the mobile app had created).
+    the full ``SA_RINCON...`` UDN, which the player resolves for removal.
     Keyless records (empty Username0, truncated UDN) resolve only with an empty
-    AccountID -- verified live: ``RemoveAccount(type, "")`` returns 200 and
-    removes exactly that service's keyless record, while the truncated UDN is
-    rejected with UPnP error 806.
+    AccountID: ``RemoveAccount(type, "")`` returns 200 and removes exactly that
+    service's keyless record, while the truncated UDN is rejected with UPnP
+    error 806.
     """
     if service.service_id <= 0:
         raise OnboardingError(f"{service.name} has no usable service ID")
@@ -422,13 +627,12 @@ def remove_account(host: str, service: Service, account_udn: str, *, household_i
 def _account_key(service: Service, account_udn: str) -> str:
     """Return the player's account-key identifier for edit operations.
 
-    Verified against a live player: EditAccountMd resolves the account only when
-    AccountID is the key tail after the encoded-type prefix (``X_#Svc...-Token``,
-    stored as Username0); the full ``SA_RINCON...`` UDN is rejected with UPnP
-    error 806.  For legacy credential accounts the key is assumed to be the
-    username AddAccountX committed (no live legacy account was available to
-    confirm the exact UDN shape); if the prefix does not match, the UDN is passed
-    through unchanged as a fallback.
+    Edit operations resolve the account only when AccountID is the key tail
+    after the encoded-type prefix (``X_#Svc...-Token``, stored as Username0);
+    the full ``SA_RINCON...`` UDN is rejected with UPnP error 806.  For legacy
+    credential accounts the key is assumed to be the username AddAccountX
+    committed; if the prefix does not match, the UDN is passed through
+    unchanged as a fallback.
     """
     prefix = f"SA_RINCON{account_type(service.service_id)}_"
     return account_udn[len(prefix):] if account_udn.startswith(prefix) else account_udn
@@ -476,7 +680,7 @@ def edit_account_password(
 def edit_account_md(host: str, service: Service, account_udn: str, new_md: str, *, household_id: str) -> None:
     """Replace the provider metadata blob stored with an account.
 
-    Native contract (FUN_100e61520 / FUN_100cd34a1): EditAccountMd takes
+    Native contract (FUN_100e61520 / FUN_100cd32b0): EditAccountMd takes
     AccountType, the account key (Username0, the UDN tail after the encoded
     type) as AccountID, and NewAccountMd.
     """
@@ -513,8 +717,9 @@ def refresh_account_credentials(
     Native contract (FUN_100e612d0): RefreshAccountCredentialsX takes the
     encoded AccountType, the numeric AccountUID from the account UDN, and the
     AccountToken/AccountKey pair.  This is the player-side persistence of a
-    provider reauthorization; it is distinct from the controller-local
-    in-memory refresh performed by ``SmapiClient.refresh_auth_token``.
+    provider reauthorization; it is distinct from
+    ``SmapiClient.refresh_auth_token``, which asks the provider for a fresh
+    token without writing anything to the player.
     """
     if account_uid <= 0:
         raise OnboardingError("A positive numeric AccountUID is required")
@@ -541,10 +746,9 @@ def get_web_code(host: str, service: Service) -> str:
 
     Native contract (FUN_100e60530): GetWebCode takes the encoded AccountType
     and returns a WebCode the user can enter on the provider's site.  This is
-    read-only; it does not change any player state.  Modern player firmware and
-    current providers reject the legacy action (observed UPnP error 800 for
-    every auth type on firmware 90.0), so the rejection is translated into an
-    actionable OnboardingError instead of a raw fault.
+    read-only; it does not change any player state.  Modern player firmware
+    rejects the legacy action (UPnP error 800), so the rejection is translated
+    into an actionable OnboardingError instead of a raw fault.
     """
     import xml.etree.ElementTree as ET
 

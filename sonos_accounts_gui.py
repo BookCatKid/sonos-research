@@ -618,6 +618,7 @@ class SonosExplorerApp:
         self.browser_detail_image: Any = None
         self.onboarding_services: dict[str, smapi.Service] = {}
         self.onboarding_session: onboarding.LinkSession | None = None
+        self._onboarding_commit_target: tuple[str, str] | None = None
         self.manage_services: dict[int, smapi.Service] = {}
         self.manage_accounts: dict[str, tuple[smapi.Service, smapi.Account]] = {}
         self.manage_reauthorize_session: onboarding.LinkSession | None = None
@@ -995,10 +996,9 @@ class SonosExplorerApp:
                 "RemoveAccount uses the account UDN as the native AccountID. Edit operations use the "
                 "account key (Username0) — the player rejects the full UDN for them. Set nickname "
                 "renames accounts via the local SetAccountNicknameX: AccountUDN and the "
-                "nickname are sent in the 2:-encoded household envelope (cracked from a wire capture, "
-                "verified live on keyed and keyless records alike). "
+                "nickname are sent in the 2:-encoded household envelope. "
                 "Keyless records (empty-key anonymous adds) are removed with the empty-key "
-                "RemoveAccount contract, verified live."
+                "RemoveAccount contract."
             ),
             style="Muted.TLabel",
             wraplength=320,
@@ -1440,6 +1440,15 @@ class SonosExplorerApp:
             "AppLink": "Modern provider link: getAppLink chooses browser or provider-app authorization.",
         }
         self.onboarding_auth_var.set(descriptions.get(service.auth, f"Unsupported descriptor auth type: {service.auth}"))
+        if "Apple Music" in service.name:
+            self.onboarding_auth_var.set(
+                f"{service.name} supports app-to-app linking only. getAppLink returns an "
+                "encrypted app-link marker (appUrlEncrypt=true) with no browser URL, even "
+                "when the controller advertises macOS, iOS, or Windows. "
+                "Sonos restricts initial linking to the mobile app: add the account once "
+                "from the Sonos app on iOS/Android, then this tool can browse, manage, and "
+                "rename it like any other account."
+            )
         credentials = service.auth in {"UserId", "UserIdPassword"}
         self.onboarding_username_entry.configure(state="normal" if credentials else "disabled")
         self.onboarding_password_entry.configure(
@@ -1491,7 +1500,9 @@ class SonosExplorerApp:
             )
         else:
             self.onboarding_auth_var.set(
-                "The provider returned no standalone browser/device-link path. This is provider policy, not a LAN failure."
+                "The provider returned no browser or device-link URL. It offers app-to-app "
+                "linking only (Apple Music behaves this way): add the account once from the "
+                "Sonos mobile app, then this tool can browse and manage it."
             )
 
     def commit_account_onboarding(self) -> None:
@@ -1566,13 +1577,50 @@ class SonosExplorerApp:
                 return onboarding.AddedAccount(added.service_id, added.service_name, added.account_udn, nickname)
             return added
 
+        self._onboarding_commit_target = (host, actual_household)
         self._run_task(f"Adding {service.name} account…", work, self._onboarding_commit_complete)
 
     def _onboarding_commit_complete(self, result: onboarding.AddedAccount) -> None:
         self.onboarding_password_var.set("")
         self.onboarding_session = None
+        # Recreate the official app's post-auth flow: when the provider reports
+        # the account holder's screen name (getDeviceAuthToken userInfo.nickname,
+        # e.g. Spotify's "BookCatKid") and no nickname was chosen in advance, the
+        # user is prompted with it pre-filled and the choice is applied with
+        # SetAccountNicknameX -- the same two SOAP calls the official controller
+        # fires back-to-back (AddOAuthAccountX then SetAccountNicknameX).
+        nickname = result.nickname
+        if not nickname and result.provider_nickname and self._onboarding_commit_target:
+            host, household_id = self._onboarding_commit_target
+            chosen = simpledialog.askstring(
+                "Name this account",
+                f"{result.service_name} reports your account name as {result.provider_nickname!r}.\n"
+                "Choose the nickname shown in Sonos:",
+                initialvalue=result.provider_nickname,
+                parent=self.root,
+            )
+            if chosen is not None and chosen.strip():
+                nickname = chosen.strip()
+                # The commit callback runs while the task flag is still busy, so
+                # the rename is deferred to the next event-loop tick.
+                self.root.after(
+                    0,
+                    lambda: self._run_task(
+                        f"Setting nickname for {result.service_name}…",
+                        lambda: onboarding.set_nickname(
+                            host, result.account_udn, nickname, household_id=household_id
+                        ),
+                        lambda _ok: self._onboarding_finish(result, nickname),
+                    ),
+                )
+                return
+        self._onboarding_finish(result, nickname)
+
+    def _onboarding_finish(self, result: onboarding.AddedAccount, nickname: str) -> None:
+        self._onboarding_commit_target = None
+        final_name = nickname or result.nickname or result.account_udn
         self.onboarding_auth_var.set(
-            f"Added {result.service_name}: {result.nickname or result.account_udn}. Reload Accounts to verify replication."
+            f"Added {result.service_name}: {final_name}. Reload Accounts to verify replication."
         )
         messagebox.showinfo(
             "Sonos Service Explorer",
@@ -1650,11 +1698,10 @@ class SonosExplorerApp:
         pair = self._selected_manage_account()
         enabled = pair is not None
         # Remove works for every record: keyed accounts resolve by their UDN, and
-        # keyless records resolve with the empty-key contract (verified live).
+        # keyless records resolve with the empty-key contract.
         self.manage_remove_button.configure(state="normal" if enabled else "disabled")
-        # Local SetAccountNicknameX renames any record once AccountUDN and the
-        # nickname are wrapped in the household 2: envelope (cracked from a wire
-        # capture, verified live on keyed and keyless records alike).
+        # Local SetAccountNicknameX renames any record: AccountUDN and the
+        # nickname are wrapped in the household 2: envelope.
         self.manage_rename_button.configure(state="normal" if enabled else "disabled")
         self.manage_reauthorize_button.configure(state="normal" if enabled else "disabled")
         if pair is None:
@@ -1677,8 +1724,8 @@ class SonosExplorerApp:
         if keyless:
             details["keyless_record"] = (
                 "This record has no provider key or username (empty-key anonymous record). Remove "
-                "uses the empty-key RemoveAccount contract, and rename works through the "
-                "2:-encoded SetAccountNicknameX envelope (both verified live on keyless records)."
+                "uses the empty-key RemoveAccount contract; rename works through the "
+                "2:-encoded SetAccountNicknameX envelope."
             )
         self._set_text(self.manage_details, json.dumps(details, indent=2, sort_keys=True))
 

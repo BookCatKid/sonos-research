@@ -1,0 +1,65 @@
+# AccountTier: exactly what the official app sends (Ghidra-verified)
+
+Traced in the SonosDesktop ghidra project (program "Sonos") via xref -> vtable
+resolution. Every claim below was verified in the decompiler this session.
+
+## 1. The provider's tier STRING is display-only dead data
+
+`refreshAuthTokenResult` parsing (refresh builder) stores the provider's
+`userInfo.accountTier` string ("free"/"premium"/"trial") into the account record
+at offset 0x1326c:
+
+    uVar6 = FUN_100ecd220(puVar4, "http://www.sonos.com/Services/1.1|accountTier");
+    FUN_100ec82e0(uVar6, (long)param_1 + 0x1326c, 0x21);
+
+That buffer is referenced exactly twice in the traced binary (zeroed once,
+copied once) and NEVER read again. It is NOT what is sent to the player. There
+is no string->number conversion anywhere (no atoi/strtol on it).
+
+## 2. The player field is numeric ui4
+
+`AccountTier` is written with the same numeric field writer as `AccountType`
+(FUN_100ecb970 + FUN_100ec7260, the ui4 path), not the string writer
+(FUN_100ecb9e0 + virtual +0x20). Sending the provider's raw string gets UPnP 402
+because the SCPD type is ui4.
+
+## 3. Every send path uses a per-flow constant byte -- never derived from the account
+
+Three SystemProperties request builders share the credential field-setter
+FUN_1004ad5c0 (AccountType, AccountToken, AccountKey, OAuthDeviceID,
+AuthorizationCode, RedirectURI, UserIdHashCode, AccountTier, AccountUDN,
+AccountNickname):
+
+- Class A, vtable PTR_FUN_101418720 (per-service-descriptor wrapper):
+  - slot 24 FUN_1004a7490  -- wrapped-credentials flow (token/key/deviceID/hash
+    filled, AuthorizationCode="" RedirectURI=""). Tier = caller byte, passed
+    through verbatim.
+  - slot 25 FUN_1004a7730  -- auth-code flow (AuthorizationCode+RedirectURI
+    filled, token/key/hash=""). Tier = literal 0.
+- Class B, vtable PTR_FUN_1014194a8 (per-account action controller; ctor
+  FUN_1004ab5c0 stores descriptor flags at obj+0x58/0x59/0x5a):
+  - slot 26 FUN_1004acfe0 -- commit dispatcher. Branches on the account UDN:
+      * UDN tail (after "SA_RINCON<num>_") starts with "X_#"
+        (FUN_100ed1b30 parses the UDN, FUN_100ed1df0 does the check)
+        -> AddOAuthAccountX, tier = caller byte passed through (param_7)
+      * otherwise -> ReplaceAccountX (fields AccountUDN, NewAccountID,
+        NewAccountPassword, AccountToken, AccountKey, OAuthDeviceID,
+        NewAccountUDN via FUN_1004aced0) -- NO AccountTier field at all.
+
+A third builder (FUN_100dff310-based, in ghidra-class-xrefs.txt ~line 3554)
+also sends AccountTier as param_9 (ui4).
+
+## 4. Observed values
+
+- Wire capture (Windows controller, free-tier Spotify add, wrapped flow):
+  AccountTier = 1.
+- Auth-code flow: hardcoded 0.
+- ReplaceAccountX: no tier.
+- Household Tier0 records observed: 0 and 1 only.
+
+## Conclusion
+
+AccountTier is a per-record flag the app sets per flow: 1 for the wrapped
+(cloud) commit, 0 for the local auth-code commit, absent for replace. It is
+NOT the subscription tier; the provider's accountTier string is display-only.
+Our ACCOUNT_TIER="1" matches the captured app behavior for the wrapped flow.

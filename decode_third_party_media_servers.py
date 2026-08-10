@@ -188,8 +188,7 @@ def encode_blob(plaintext: bytes, household: str) -> str:
     key, then ``2:`` + base64(iv + ciphertext).  The official controller wraps
     every account value it sends to SystemProperties (AccountUDN, nickname,
     etc.) in this envelope; plaintext values are rejected by the player with
-    UPnP error 402.  The format was confirmed from a wire capture of the
-    Windows controller and verified live against a household player.
+    UPnP error 402.
     """
     body = plaintext + hashlib.md5(plaintext).digest()[:4]  # protocol integrity field
     iv = os.urandom(16)

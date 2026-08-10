@@ -19,7 +19,7 @@ There are three different evidence levels below:
 3. The descriptor selects one of four authentication modes from `SCAuthenticationType`: anonymous, username/password, device-link, or app-link. This is not a controller guess or a hard-coded Apple/Pandora switch; it is service metadata.
 4. For username/password, SCLib can validate first and then create an add-account operation. For OAuth-style services it either:
    - accepts a completed `authToken`, private/refresh `authKey`, OAuth device ID, user hash, and account tier; or
-   - accepts a `linkCode`, redirect URI, and OAuth device ID, allowing the player and provider to finish the token exchange.
+   - accepts a `linkCode`, redirect URI, and OAuth device ID, which the controller exchanges with the provider's `getDeviceAuthToken` itself before committing the completed package (the player never exchanges the link code).
 5. The native controller sends the chosen player operation to `SystemProperties:1`:
    - `AddAccountX(AccountType, AccountID, AccountPassword)`; or
    - `AddOAuthAccountX(AccountType, AccountToken, AccountKey, OAuthDeviceID, AuthorizationCode, RedirectURI, UserIdHashCode, AccountTier)`.
@@ -32,7 +32,29 @@ Native evidence is in `../research/ghidra-class-xrefs.txt`: `FUN_100e60740` buil
 
 For OAuth/AppLink integrations, Sonos first calls the provider's `getAppLink`. The provider response advertises the available path(s). If an app URL is returned and the compatible provider app is available, the controller can offer app authentication; otherwise a browser/device-link URL is used. Both converge on `getDeviceAuthToken`, which returns a household-specific auth token and optional private refresh key. The controller then commits that result to the player through `AddOAuthAccountX`.
 
+A wire capture of the Windows controller adding Spotify pins down the exact commit
+shape: `AddOAuthAccountX(AccountType=3079, AccountToken, AccountKey, OAuthDeviceID,
+UserIdHashCode, AccountTier=1, AuthorizationCode="", RedirectURI="")` against
+`SystemProperties:1`, with `X-Sonos-Api-Key`/`X-Sonos-Corr-Id`/`X-SONOS-TARGET-UDN`
+headers. Every credential field arrives in the household `2:` envelope. The captured blobs decrypt with the
+household key: `AccountToken` is the provider access token, `AccountKey` the
+private key, `OAuthDeviceID` **the household ID**, `UserIdHashCode` a 16-byte
+hash, and the returned `AccountUDN` `SA_RINCON3079_X_#Svc3079-0-Token`. The
+nickname operation in the same capture targeted the identical decrypted UDN — the
+"mismatch" between the two `2:` blobs was only because they were compared
+encrypted. `commit_link` now reproduces this exactly: it exchanges the link code
+via `getDeviceAuthToken`, envelopes every field, and sends empty auth code/URI.
+
 This corrects an important overgeneralization: Apple Music does **not** necessarily open the Apple Music app. App-link is only one possible onboarding presentation, and it is not the normal browse/refresh mechanism. Once the account exists, browsing uses the stored household account.
+
+Verified live against a household player: Apple's `getAppLink` returns the same stub
+(empty `callToAction` plus `appUrlEncrypt=true`) for every advertised platform identity
+-- Windows, Macintosh, iOS, and Android -- with no `appUrl`, `regUrl`, or `linkCode`.
+That is an app-to-app marker: there is no standalone browser/device-link path any
+controller can open, and Sonos's own desktop apps cannot add Apple Music either (initial
+linking is mobile-app only, iOS/Android). The onboarding module detects this exact
+marker and raises an actionable error directing the user to link once from the Sonos
+mobile app; browsing and management of an already-linked Apple account work normally.
 
 ### Account management after addition
 
