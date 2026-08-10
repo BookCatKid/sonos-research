@@ -220,17 +220,11 @@ def local_soap(
         fault_nodes = descendants(root, "Fault")
         fault = fault_nodes[0] if fault_nodes else root
         detail_nodes = descendants(fault, "detail")
-        error_code_nodes = descendants(fault, "errorCode")
-        error_description_nodes = descendants(fault, "errorDescription")
         raise LocalSoapFault(
             action,
             status,
-            (error_code_nodes[0].text or "").strip()
-            if error_code_nodes
-            else child_text(fault, "faultcode"),
-            (error_description_nodes[0].text or "").strip()
-            if error_description_nodes
-            else child_text(fault, "faultstring"),
+            child_text(fault, "faultcode") or child_text(root, "errorCode"),
+            child_text(fault, "faultstring") or child_text(root, "errorDescription"),
             element_value(detail_nodes[0]) if detail_nodes else element_value(fault),
         )
     return result

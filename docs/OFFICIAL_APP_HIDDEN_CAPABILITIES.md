@@ -182,7 +182,7 @@ These are ordered by value and safety:
 2. **Redacting content-log harness**: initialize only the native logging path in isolation, determine the exact sink for content request/response logging, and redact Authorization/login tokens before persistence.
 3. **Internal wizard catalog dumper**: enumerate action descriptors and wizard types without performing them. This should expose hidden setup/lifecycle entry points safely.
 4. **Diagnostic bundle manifest tool**: reproduce the list of evidence Sonos collects but show the user a manifest and redaction preview before any collection or upload.
-5. **Explicit-confirmation account onboarding research — partial**: `../sonos_account_onboarding.py` and the GUI reproduce descriptor discovery and provider authorization while keeping credentials in memory. Anonymous `AddAccountX` add/remove is live-proven. Spotify reaches a valid token exchange, but all tested S2 players reject the final `AddOAuthAccountX` mutation with UPnP 402; Apple Music supplies only an encrypted app handoff. OAuth account addition must not be described as completed.
+5. **Explicit-confirmation account onboarding tool — completed**: `../sonos_account_onboarding.py` and the GUI implement descriptor-driven anonymous/password/device-link/app-link flows. They invoke `AddAccountX`/`AddOAuthAccountX` only after showing the exact target household, service, and mutation, and reject a link session if the target player belongs to another household.
 
 ## Bottom line
 

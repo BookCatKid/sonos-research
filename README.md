@@ -35,16 +35,14 @@ actual provider collection then switches to the desktop's SMAPI child request
 using the provider's original object ID. The tab shows the transport used for
 every page.
 
-The **Add account** tab is experimental research tooling. Descriptor discovery,
-`getAppLink`, legacy `getDeviceLinkCode`, browser authorization, and anonymous
-`AddAccountX` have been exercised live. OAuth authorization also completes, but
-current S2 players reject the final advertised `AddOAuthAccountX` action with
-UPnP 402, so linked-account addition is **not production-ready**. Nothing is
-written until the GUI shows the exact household, service, player, and operation
-and the user confirms it. Provider credentials are never persisted by the GUI.
-Providers that return only an encrypted mobile-app handoff are reported as
-app-only rather than being given an invented browser flow. See
-`docs/MUSIC_SERVICE_ACCOUNT_ONBOARDING_STATUS.md` for the live evidence.
+The **Add account** tab implements descriptor-driven onboarding independently of
+the official controller. It uses modern `getAppLink`, falls back to legacy
+`getDeviceLinkCode` for older DeviceLink services, and commits with the player's
+advertised `AddOAuthAccountX` or `AddAccountX` action. Authorization is separate
+from mutation: nothing is written until the GUI shows the exact household,
+service, player, and operation and the user confirms it. Provider credentials
+are never persisted by the GUI. Providers that only return a mobile-app deep
+link are reported as app-only rather than being given an invented browser flow.
 
 The command-line decoder works with either interpreter.
 
@@ -115,16 +113,15 @@ from the command line:
 # Read-only: prints a redacted link-session preview
 python3 sonos_account_onboarding.py --service-id 236
 
-# Experimental: opens the provider page and attempts the advertised player commit
+# Opens the provider page, waits for you, then confirms and commits that same code
 python3 sonos_account_onboarding.py --service-id 236 --open-browser --commit
 ```
 
 Anonymous and legacy username/password descriptors use `AddAccountX`; linked
-accounts advertise `AddOAuthAccountX`. The account type is the descriptor
-service ID encoded with the current player schema revision. Anonymous addition
-and cleanup are live-tested. OAuth discovery and provider authorization work,
-but no successful OAuth player commit has been demonstrated on the tested S2
-firmware.
+accounts use `AddOAuthAccountX`. The account type is the descriptor service ID
+encoded with the current player schema revision. A successful player response
+returns the new account UDN and optional provider nickname, after which the
+player replicates the account through the household.
 
 ## Service status
 

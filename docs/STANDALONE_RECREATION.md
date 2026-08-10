@@ -22,12 +22,10 @@ and cannot accidentally damage a household.
 4. **Snapshot comparison** — `../sonos_system_diff.py` detects player, firmware,
    room, topology, account, service-catalog, credential-state, and capability
    changes offline.
-5. **Music-service account onboarding research** — `../sonos_account_onboarding.py`
-   and the GUI implement descriptor discovery, modern AppLink, legacy DeviceLink,
-   and explicit-confirmation mutation attempts. Anonymous `AddAccountX` add/remove
-   is proven. OAuth authorization succeeds, but tested S2 players reject the
-   final `AddOAuthAccountX` commit with UPnP 402. Link sessions are household-bound
-   and credentials remain in memory.
+5. **Music-service account onboarding** — `../sonos_account_onboarding.py` and the
+   GUI implement anonymous/credential, modern AppLink, and legacy DeviceLink
+   discovery plus explicit-confirmation `AddAccountX`/`AddOAuthAccountX`
+   commits. Link sessions are household-bound and credentials remain in memory.
 6. **Service status** — `../sonos_service_status.py` provides the safe public
    equivalent of the unproven native outage debug action using Sonos's official
    Statuspage API.
