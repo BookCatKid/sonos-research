@@ -1966,7 +1966,17 @@ class SonosExplorerApp:
                 replace_account_udn=account_udn,
             )
 
-        self._run_task(f"Committing reauthorized {service.name} account…", work, self._manage_reauthorize_complete)
+        # The commit callback runs while the task flag is still busy, so the
+        # commit is deferred to the next event-loop tick (same pattern as the
+        # nickname-prefill flow); otherwise _run_task silently drops it.
+        self.root.after(
+            0,
+            lambda: self._run_task(
+                f"Committing reauthorized {service.name} account…",
+                work,
+                self._manage_reauthorize_complete,
+            ),
+        )
 
     def _manage_reauthorize_complete(self, result: onboarding.AddedAccount) -> None:
         self.manage_reauthorize_session = None

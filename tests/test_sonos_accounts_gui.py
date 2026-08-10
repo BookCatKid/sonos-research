@@ -237,16 +237,39 @@ class AccountGuiTests(unittest.TestCase):
             "https://login.example/",
             "code",
         )
+        deferred: list = []
+
+        def fake_after(_delay: int, callback) -> None:
+            deferred.append(callback)
+
+        def fake_run_task(label: str, work, success) -> None:
+            # Mirror the real busy guard: _run_task silently drops any task
+            # scheduled while another task is still running. The reauthorize
+            # commit must therefore be deferred (root.after) until the link
+            # request task has finished and cleared the flag.
+            if app.busy:
+                return
+            app.busy = True
+            try:
+                result = work()
+                success(result)
+            finally:
+                app.busy = False
+
+        app.root.after.side_effect = fake_after
         with patch("sonos_accounts_gui.onboarding.begin_link", return_value=session), patch(
             "sonos_accounts_gui.messagebox.askyesno", return_value=True
         ), patch.object(
-            SonosExplorerApp, "_run_task", side_effect=lambda label, work, success: success(work())
+            SonosExplorerApp, "_run_task", side_effect=fake_run_task
         ), patch("sonos_accounts_gui.webbrowser.open"), patch(
             "sonos_accounts_gui.onboarding.commit_link"
         ) as commit, patch("sonos_accounts_gui.messagebox.showinfo"), patch(
             "sonos_accounts_gui.secrets.token_urlsafe", return_value="state"
         ):
             app.manage_reauthorize()
+            self.assertEqual(len(deferred), 1, "commit must be deferred, not fired while busy")
+            for callback in deferred:
+                callback()
         # Reauthorizing an existing account mirrors the official controller's
         # per-account replace action: fresh credentials are committed through
         # ReplaceAccountX against the selected record's UDN instead of adding a
