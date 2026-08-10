@@ -29,7 +29,7 @@ and cannot accidentally damage a household.
 6. **Music-service account management** — the same module and the GUI's **Manage
    accounts** tab implement the player's SystemProperties account surface:
    `RemoveAccount`, `EditAccountPasswordX`, `EditAccountMd`,
-   `RefreshAccountCredentialsX`, `SetAccountNicknameX`, and `GetWebCode`, each
+   `RefreshAccountCredentialsX`, and `SetAccountNicknameX`, each
    with the exact field layout from native decompilation. Every mutation
    verifies the target player's household before writing. Player rejections now
    carry the decoded UPnP error code. Live verification refined the contracts:
@@ -41,9 +41,9 @@ and cannot accidentally damage a household.
    verified live on keyed and keyless records alike; anonymous descriptors commit
    with an empty account ID
    into keyless records that stay browsable and are removed again via the
-   empty-key `RemoveAccount` contract (verified live); and the legacy
-   `GetWebCode` returns UPnP error 800 for every service, so it is exposed only
-   through the module/CLI.
+   empty-key `RemoveAccount` contract (verified live). The legacy `GetWebCode`
+   action was removed: modern player firmware rejects it with UPnP error 800
+   for every service, so it is never usable.
 6. **Service status** — `../sonos_service_status.py` provides the safe public
    equivalent of the unproven native outage debug action using Sonos's official
    Statuspage API.

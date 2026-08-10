@@ -191,9 +191,8 @@ surfaces that code in every error, so the Activity tab and the CLI show e.g.
 account could not be resolved)` instead of the opaque `UPnPError` alone. Codes
 observed against live players: 402 (invalid arguments — returned for plaintext
 `SetAccountNicknameX` values, which must instead be wrapped in the household
-`2:` envelope, and by anonymous `AddAccountX` for any non-empty account ID), 800
-(the legacy `GetWebCode` returns this for every service), and 806 (account could
-not be resolved — an identifier that matches no stored account, e.g. the full
+`2:` envelope, and by anonymous `AddAccountX` for any non-empty account ID), and
+806 (account could not be resolved — an identifier that matches no stored account, e.g. the full
 UDN passed to edit operations, which take the account key instead).
 
 ## Service status

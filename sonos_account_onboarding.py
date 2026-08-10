@@ -829,41 +829,8 @@ def refresh_account_credentials(
     )
 
 
-def get_web_code(host: str, service: Service) -> str:
-    """Ask the player for the account-activation web code.
-
-    Native contract (FUN_100e60530): GetWebCode takes the encoded AccountType
-    and returns a WebCode the user can enter on the provider's site.  This is
-    read-only; it does not change any player state.  Modern player firmware
-    rejects the legacy action (UPnP error 800), so the rejection is translated
-    into an actionable OnboardingError instead of a raw fault.
-    """
-    import xml.etree.ElementTree as ET
-
-    try:
-        response = local_soap(
-            host,
-            SYSTEM_PROPERTIES_PATH,
-            SYSTEM_PROPERTIES,
-            "GetWebCode",
-            {"AccountType": str(account_type(service.service_id))},
-            timeout=35,
-        )
-    except LocalSoapFault as exc:
-        if exc.upnp_code is not None:
-            raise OnboardingError(
-                f"The player rejected GetWebCode for {service.name} (UPnP error {exc.upnp_code}: "
-                f"{exc.upnp_description or 'action not supported for this service on this player'}). "
-                "Web-code activation is a legacy flow that current providers and this firmware do not "
-                "use; no account state was changed."
-            ) from exc
-        raise
-    root = ET.fromstring(response)
-    nodes = descendants(root, "WebCode")
-    code = (nodes[0].text or "").strip() if nodes else ""
-    if not code:
-        raise OnboardingError(f"Player returned no web code for {service.name}")
-    return code
+# The native GetWebCode action is deliberately not implemented: current player
+# firmware rejects it with UPnP error 800 for every service, so it always fails.
 
 
 def _selected_player(host: str | None):
@@ -921,7 +888,6 @@ def main() -> None:
     manage.add_argument("--account-uid", type=int, help="numeric AccountUID from the account UDN")
     manage.add_argument("--token", default="", help="replacement token for RefreshAccountCredentialsX")
     manage.add_argument("--key", default="", help="replacement key for RefreshAccountCredentialsX")
-    manage.add_argument("--web-code", action="store_true", help="print the player's GetWebCode result")
     args = parser.parse_args()
 
     player = _selected_player(args.host)
@@ -937,11 +903,6 @@ def main() -> None:
     service = services.get(args.service_id)
     if not service:
         raise SystemExit(f"Service {args.service_id} is not advertised by the household")
-
-    if args.web_code:
-        code = get_web_code(player.host, service)
-        print(json.dumps({"service": service.name, "web_code": code}, indent=2))
-        return
 
     if args.new_password is not None:
         if not args.commit:

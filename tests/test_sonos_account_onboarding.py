@@ -15,7 +15,6 @@ from sonos_account_onboarding import (
     edit_account_md,
     edit_account_password,
     get_device_auth_token,
-    get_web_code,
     refresh_account_credentials,
     remove_account,
     replace_account_credentials,
@@ -618,39 +617,6 @@ class AccountOnboardingTests(unittest.TestCase):
         with self.assertRaisesRegex(Exception, "positive numeric AccountUID"):
             refresh_account_credentials("192.0.2.1", service, 0, "token", "key", household_id="Sonos_hh")
         soap.assert_not_called()
-
-    @patch(
-        "sonos_account_onboarding.local_soap",
-        return_value=b'''<s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/">
-<s:Body><u:GetWebCodeResponse xmlns:u="urn:schemas-upnp-org:service:SystemProperties:1">
-<WebCode>1234-5678</WebCode></u:GetWebCodeResponse></s:Body></s:Envelope>''',
-    )
-    def test_get_web_code_parses_native_result(self, soap) -> None:
-        service = Service(37, "Linked", "https://example.invalid", "AppLink", 0, {})
-        code = get_web_code("192.0.2.1", service)
-        self.assertEqual(code, "1234-5678")
-        self.assertEqual(soap.call_args.args[3], "GetWebCode")
-        self.assertEqual(soap.call_args.args[4], {"AccountType": str(account_type(37))})
-
-    @patch(
-        "sonos_account_onboarding.local_soap",
-        return_value=b'''<s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/">
-<s:Body><u:GetWebCodeResponse xmlns:u="urn:schemas-upnp-org:service:SystemProperties:1">
-</u:GetWebCodeResponse></s:Body></s:Envelope>''',
-    )
-    def test_get_web_code_rejects_empty_player_result(self, soap) -> None:
-        service = Service(37, "Linked", "https://example.invalid", "AppLink", 0, {})
-        with self.assertRaisesRegex(Exception, "returned no web code"):
-            get_web_code("192.0.2.1", service)
-
-    @patch(
-        "sonos_account_onboarding.local_soap",
-        side_effect=LocalSoapFault("GetWebCode", 500, "s:Client", "UPnPError", upnp_code=800),
-    )
-    def test_get_web_code_translates_player_rejection(self, soap) -> None:
-        service = Service(37, "Linked", "https://example.invalid", "AppLink", 0, {})
-        with self.assertRaisesRegex(Exception, "UPnP error 800.*no account state was changed"):
-            get_web_code("192.0.2.1", service)
 
 
 if __name__ == "__main__":
