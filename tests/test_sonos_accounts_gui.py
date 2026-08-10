@@ -224,6 +224,38 @@ class AccountGuiTests(unittest.TestCase):
         # contract is applied inside onboarding.remove_account.
         self.assertEqual(remove.call_args.args[2], "SA_RINCON130823_")
 
+    def test_manage_reauthorize_replaces_selected_account_in_place(self) -> None:
+        app = self._manage_app()
+        app.manage_tree.selection.return_value = ["manage-37-1"]
+        app._manage_account_selected()
+        session = onboarding.LinkSession(
+            37,
+            "Linked",
+            "AppLink",
+            "Sonos_hh",
+            onboarding.account_type(37),
+            "https://login.example/",
+            "code",
+        )
+        with patch("sonos_accounts_gui.onboarding.begin_link", return_value=session), patch(
+            "sonos_accounts_gui.messagebox.askyesno", return_value=True
+        ), patch.object(
+            SonosExplorerApp, "_run_task", side_effect=lambda label, work, success: success(work())
+        ), patch("sonos_accounts_gui.webbrowser.open"), patch(
+            "sonos_accounts_gui.onboarding.commit_link"
+        ) as commit, patch("sonos_accounts_gui.messagebox.showinfo"), patch(
+            "sonos_accounts_gui.secrets.token_urlsafe", return_value="state"
+        ):
+            app.manage_reauthorize()
+        # Reauthorizing an existing account mirrors the official controller's
+        # per-account replace action: fresh credentials are committed through
+        # ReplaceAccountX against the selected record's UDN instead of adding a
+        # duplicate AddOAuthAccountX account.
+        commit.assert_called_once()
+        self.assertEqual(commit.call_args.args[0], "192.0.2.1")
+        self.assertEqual(commit.call_args.args[2], session)
+        self.assertEqual(commit.call_args.kwargs["replace_account_udn"], _account(37, 1).udn)
+
     def test_manage_rename_enabled_for_keyed_account(self) -> None:
         app = self._manage_app()
         app.manage_accounts["manage-37-1"] = (app.manage_services[37], _account(37, 1, token="tok", key="key"))

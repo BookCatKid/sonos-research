@@ -74,6 +74,22 @@ A live re-add after removal then succeeded with a fresh token
 (`AddOAuthAccountX` 200, account `SA_RINCON3079_X_#Svc3079-0-Token`, token
 accepted with `needs_reauth` false).
 
+Re-linking an **existing** account is a separate player action. The desktop
+controller's commit dispatcher (`FUN_1004acfe0`, per-account action class with
+vtable `PTR_FUN_1014194a8`) chooses between `AddOAuthAccountX` and
+`ReplaceAccountX` based on the record's UDN shape: `X_#`-style records are
+added, everything else is replaced in place. `ReplaceAccountX`
+(`FUN_100e61e60`/`FUN_1004aced0`, argument list confirmed against the player's
+live SystemProperties SCPD) takes `AccountUDN`, `NewAccountID`,
+`NewAccountPassword`, `AccountToken`, `AccountKey`, `OAuthDeviceID`, and
+`NewAccountUDN` — it keeps the existing record's UDN and swaps only the
+credential package, so no duplicate record or account-slot clash is created,
+and it carries **no `AccountTier` field at all**. The onboarding module
+recreates this two-path commit: `commit_link(..., replace_account_udn=...)`
+commits fresh credentials through `ReplaceAccountX`, and the GUI's
+Reauthorize action targets the selected account instead of adding a second
+`AddOAuthAccountX` record (which the player rejects with UPnP 402).
+
 Live non-mutating probes established concrete provider variation:
 
 | Provider | Descriptor | Result |

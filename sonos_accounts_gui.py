@@ -997,6 +997,9 @@ class SonosExplorerApp:
                 "account key (Username0) — the player rejects the full UDN for them. Set nickname "
                 "renames accounts via the local SetAccountNicknameX: AccountUDN and the "
                 "nickname are sent in the 2:-encoded household envelope. "
+                "Reauthorize replaces the selected account's credentials in place via "
+                "ReplaceAccountX — the official controller's re-link action — instead of "
+                "creating a duplicate AddOAuthAccountX record. "
                 "Keyless records (empty-key anonymous adds) are removed with the empty-key "
                 "RemoveAccount contract."
             ),
@@ -1918,8 +1921,9 @@ class SonosExplorerApp:
             "Reauthorize account",
             f"Household: {household}\nPlayer: {host}\nService: {service.name} ({service.service_id})\n"
             f"Account: {account.udn}\n\n"
-            "This starts the provider link flow and, after you authorize, commits a fresh "
-            "AddOAuthAccountX record to the household. Continue?",
+            "This starts the provider link flow and, after you authorize, replaces the selected "
+            "account's credentials in place via ReplaceAccountX -- the same action the official "
+            "controller uses when re-linking an existing account. Continue?",
             parent=self.root,
         ):
             return
@@ -1927,7 +1931,7 @@ class SonosExplorerApp:
         self._run_task(
             f"Requesting {service.name} reauthorization…",
             lambda: onboarding.begin_link(host, household, service, callback_path=callback),
-            lambda session: self._manage_reauthorize_link_ready(session, host, service),
+            lambda session: self._manage_reauthorize_link_ready(session, host, service, account.udn),
         )
 
     def _manage_reauthorize_link_ready(
@@ -1935,6 +1939,7 @@ class SonosExplorerApp:
         session: onboarding.LinkSession,
         host: str,
         service: smapi.Service,
+        account_udn: str,
     ) -> None:
         self.manage_reauthorize_session = session
         if not session.standalone_supported:
@@ -1947,27 +1952,32 @@ class SonosExplorerApp:
         webbrowser.open(session.registration_url)
         if not messagebox.askyesno(
             "Finish provider sign-in",
-            f"Open in the browser and finish signing in. After the provider confirms, commit the new account?\n\n"
+            f"Open in the browser and finish signing in. After the provider confirms, replace the account's credentials?\n\n"
             f"Provider URL: {session.registration_url}",
             parent=self.root,
         ):
             return
 
         def work() -> onboarding.AddedAccount:
-            return onboarding.commit_link(host, service, session)
+            return onboarding.commit_link(
+                host,
+                service,
+                session,
+                replace_account_udn=account_udn,
+            )
 
         self._run_task(f"Committing reauthorized {service.name} account…", work, self._manage_reauthorize_complete)
 
     def _manage_reauthorize_complete(self, result: onboarding.AddedAccount) -> None:
         self.manage_reauthorize_session = None
         self.summary_var.set(
-            f"Reauthorized {result.service_name}. Reload Manage accounts; the old account can be removed there."
+            f"Reauthorized {result.service_name} in place: {result.account_udn}"
         )
-        self._log(f"Reauthorization committed a new account: {result.account_udn}")
+        self._log(f"Reauthorization replaced credentials for account: {result.account_udn}")
         messagebox.showinfo(
             "Sonos Service Explorer",
-            f"A fresh {result.service_name} account was committed.\n\nAccount UDN: {result.account_udn}\n\n"
-            "Reload Manage accounts to see it; the previous account can be removed with Remove.",
+            f"{result.service_name} credentials were replaced in place.\n\nAccount UDN: {result.account_udn}\n\n"
+            "Reload Manage accounts to see the refreshed record.",
             parent=self.root,
         )
 

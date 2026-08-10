@@ -41,12 +41,13 @@ DEVICE_PROPERTIES = "urn:schemas-upnp-org:service:DeviceProperties:1"
 DEVICE_PROPERTIES_PATH = "/DeviceProperties/Control"
 CURRENT_ACCOUNT_SCHEMA = 7
 
-#: AccountTier value committed with AddOAuthAccountX.  The player's field is
-#: numeric (SCPD type ``ui4``); the provider's userInfo.accountTier string
-#: (``free``/``premium``/``trial``) is rejected with UPnP 402.  ``1`` matches
-#: the captured Windows controller's commit for a free-tier Spotify account.
-#: Whether premium/trial accounts should commit a different value is not
-#: established by any capture so far.
+#: AccountTier committed with AddOAuthAccountX.  The player's field is numeric
+#: (SCPD type ``ui4``); the provider's userInfo.accountTier string
+#: (``free``/``premium``/``trial``) is rejected with UPnP 402.  Decompiled from
+#: the desktop controller: the wrapped-credentials flow passes a caller byte
+#: through verbatim (the captured Windows commit sent ``1``), the local
+#: auth-code flow hardcodes ``0``, and ReplaceAccountX carries no tier field.
+#: Every path is a per-flow constant -- never the provider subscription level.
 ACCOUNT_TIER = "1"
 AUTH_OPERATIONS = {
     "Anonymous": "AddAccountX",
@@ -402,17 +403,27 @@ def get_device_auth_token(
     )
 
 
-def commit_link(host: str, service: Service, session: LinkSession) -> AddedAccount:
+def commit_link(
+    host: str,
+    service: Service,
+    session: LinkSession,
+    *,
+    replace_account_udn: str = "",
+) -> AddedAccount:
     """Commit an authorized provider link to the household's players.
 
-    The player does not exchange the link code itself.  The controller first
-    calls the provider's ``getDeviceAuthToken`` to obtain the credential
-    package, then installs the result through ``AddOAuthAccountX`` with every
-    account value wrapped in the household ``2:`` envelope: AccountToken,
-    AccountKey (the provider's key, which already carries its own epoch stamp),
-    OAuthDeviceID (the household ID), and UserIdHashCode.  AuthorizationCode
-    and RedirectURI stay empty.  AccountTier is sent as the ACCOUNT_TIER
-    constant.
+    Mirrors the desktop controller's commit dispatcher, which has two paths:
+    a fresh account is installed through ``AddOAuthAccountX``, while a
+    re-linked account is replaced in place through ``ReplaceAccountX`` (pass
+    ``replace_account_udn`` to select that path).  The player does not
+    exchange the link code itself: the controller first calls the provider's
+    ``getDeviceAuthToken`` for the credential package, then commits it.
+
+    The fresh-add path sends every account value wrapped in the household
+    ``2:`` envelope: AccountToken, AccountKey (the provider's key, which
+    already carries its own epoch stamp), OAuthDeviceID (the household ID),
+    and UserIdHashCode.  AuthorizationCode and RedirectURI stay empty and
+    AccountTier is the ACCOUNT_TIER constant.
     """
     if session.service_id != service.service_id:
         raise OnboardingError("Link session belongs to a different service")
@@ -433,6 +444,16 @@ def commit_link(host: str, service: Service, session: LinkSession) -> AddedAccou
         session.link_code,
         session.link_device_id,
     )
+    if replace_account_udn:
+        # Re-link path: the record keeps its UDN and only the credential
+        # package is swapped, exactly like the desktop's per-account replace.
+        return replace_account_credentials(
+            host,
+            service,
+            replace_account_udn,
+            credential,
+            household_id=session.household_id,
+        )
     user_id_hash = (
         encode_blob(_normalize_user_id_hash(credential.user_id_hash_code).encode("utf-8"), session.household_id)
         if credential.user_id_hash_code
@@ -475,6 +496,73 @@ def commit_link(host: str, service: Service, session: LinkSession) -> AddedAccou
     )
 
 
+def replace_account_credentials(
+    host: str,
+    service: Service,
+    account_udn: str,
+    credential: DeviceAuthCredential,
+    *,
+    household_id: str,
+) -> AddedAccount:
+    """Replace one existing household account's stored credentials in place.
+
+    Native contract (FUN_100e61e60 / FUN_1004aced0, confirmed against the
+    player's SystemProperties SCPD): ReplaceAccountX takes AccountUDN (the
+    existing record), NewAccountID, NewAccountPassword, AccountToken,
+    AccountKey, OAuthDeviceID, and NewAccountUDN.  The desktop controller's
+    commit dispatcher uses this action when re-linking an account instead of
+    AddOAuthAccountX: the record keeps its UDN and only the credential
+    package is swapped, so no duplicate record or account-slot clash is
+    created.  OAuth-style services leave the legacy NewAccountID/
+    NewAccountPassword pair empty, exactly as the desktop's replace commit
+    does.
+
+    The credential values follow the AddOAuthAccountX envelope contract
+    (household ``2:`` envelope); ReplaceAccountX itself has no output
+    arguments (SCPD), so the existing UDN is reported unchanged.
+    """
+    if service.service_id <= 0:
+        raise OnboardingError(f"{service.name} has no usable service ID")
+    if not account_udn:
+        raise OnboardingError("An account UDN is required to replace an account")
+    if not credential.auth_token or not credential.private_key:
+        raise OnboardingError("A complete credential package is required to replace an account")
+    _require_household(host, household_id)
+    if account_udn.startswith("2:"):
+        account_udn = decrypt_blob(account_udn, household_id).decode("utf-8")
+    try:
+        local_soap(
+            host,
+            SYSTEM_PROPERTIES_PATH,
+            SYSTEM_PROPERTIES,
+            "ReplaceAccountX",
+            {
+                "AccountUDN": encode_blob(account_udn.encode("utf-8"), household_id),
+                "NewAccountID": "",
+                "NewAccountPassword": "",
+                "AccountToken": encode_blob(credential.auth_token.encode("utf-8"), household_id),
+                "AccountKey": encode_blob(credential.private_key.encode("utf-8"), household_id),
+                "OAuthDeviceID": encode_blob(household_id.encode("utf-8"), household_id),
+                "NewAccountUDN": "",
+            },
+            timeout=35,
+        )
+    except LocalSoapFault as exc:
+        if exc.upnp_code is not None:
+            raise OnboardingError(
+                f"The player rejected ReplaceAccountX for the account (UPnP error "
+                f"{exc.upnp_code}: {exc.upnp_description or 'invalid arguments'}). "
+                "No account state was changed."
+            ) from exc
+        raise
+    return AddedAccount(
+        service.service_id,
+        service.name,
+        account_udn,
+        provider_nickname=credential.nickname,
+    )
+
+
 def _normalize_user_id_hash(user_id_hash_code: str) -> str:
     """Return the player's required base64 form of the user-id hash.
 
@@ -511,8 +599,8 @@ def _translate_commit_fault(
             return OnboardingError(
                 f"{service.name} is already linked to this household as "
                 f"{', '.join(map(str, names))}. The player most likely rejected the "
-                "duplicate commit (UPnP error 402: invalid arguments). Remove the "
-                "existing account first if you want to re-link it with fresh credentials."
+                "duplicate commit (UPnP error 402: invalid arguments). Reauthorize the "
+                "existing account in place (ReplaceAccountX) instead of adding a duplicate."
             )
     return None
 
@@ -829,6 +917,7 @@ def main() -> None:
     manage.add_argument("--remove-account", metavar="UDN", help="remove an account by its SA_RINCON UDN")
     manage.add_argument("--new-password", metavar="PASSWORD", help="new password for EditAccountPasswordX")
     manage.add_argument("--new-md", metavar="MD", help="new provider metadata for EditAccountMd")
+    manage.add_argument("--replace-account-udn", metavar="UDN", help="re-link in place: commit fresh credentials via ReplaceAccountX instead of AddOAuthAccountX")
     manage.add_argument("--account-uid", type=int, help="numeric AccountUID from the account UDN")
     manage.add_argument("--token", default="", help="replacement token for RefreshAccountCredentialsX")
     manage.add_argument("--key", default="", help="replacement key for RefreshAccountCredentialsX")
@@ -917,6 +1006,10 @@ def main() -> None:
         return
 
     if service.auth in {"Anonymous", "UserId", "UserIdPassword"}:
+        if args.replace_account_udn:
+            raise SystemExit(
+                f"--replace-account-udn applies to linked (OAuth) accounts; {service.name} uses {service.auth} credentials"
+            )
         preview = {
             "household": player.household_id,
             "player": player.host,
@@ -949,7 +1042,12 @@ def main() -> None:
         else:
             print(f"Open this URL and finish signing in:\n{session.registration_url}")
         input("After the provider confirms authorization, press Enter to commit this same link code… ")
-        result = commit_link(player.host, service, session)
+        result = commit_link(
+            player.host,
+            service,
+            session,
+            replace_account_udn=args.replace_account_udn or "",
+        )
 
     if args.nickname:
         set_nickname(player.host, result.account_udn, args.nickname, household_id=player.household_id)

@@ -18,6 +18,7 @@ from sonos_account_onboarding import (
     get_web_code,
     refresh_account_credentials,
     remove_account,
+    replace_account_credentials,
     set_nickname,
 )
 
@@ -221,9 +222,116 @@ class AccountOnboardingTests(unittest.TestCase):
         session = LinkSession(12, "Spotify", "AppLink", "Sonos_hh", account_type(12),
                               "https://login", "code")
         spotify = Service(12, "Spotify", "https://example.invalid", "AppLink", 0, {})
-        with self.assertRaisesRegex(Exception, "already linked.*Spotify 50.*Remove the existing account"):
+        with self.assertRaisesRegex(
+            Exception, "already linked.*Spotify 50.*Reauthorize the existing account in place"
+        ):
             commit_link("192.0.2.1", spotify, session)
         self.assertEqual(soap.call_args_list[1].args[3], "AddOAuthAccountX")
+
+    @patch(
+        "sonos_account_onboarding.get_device_auth_token",
+        return_value=DeviceAuthCredential(
+            auth_token="BQBJ-fresh",
+            private_key="priv-key/1786401533373",
+            nickname="BookCatKid",
+        ),
+    )
+    @patch(
+        "sonos_account_onboarding.local_soap",
+        side_effect=[HOUSEHOLD, HOUSEHOLD, SUCCESS],
+    )
+    def test_commit_link_replace_path_replaces_in_place(self, soap, _gdat) -> None:
+        # Re-linking an existing account mirrors the desktop controller's commit
+        # dispatcher: the record keeps its UDN and ReplaceAccountX swaps only
+        # the credential package, instead of committing a duplicate
+        # AddOAuthAccountX record (which the player rejects with 402).
+        session = LinkSession(204, "Apple Music", "AppLink", "Sonos_hh", 52231,
+                              "https://login", "code", "device", "callback")
+        added = commit_link(
+            "192.0.2.1",
+            SERVICE,
+            session,
+            replace_account_udn="SA_RINCON52231_X_#Svc52231-1-Token",
+        )
+        self.assertEqual(soap.call_args_list[2].args[3], "ReplaceAccountX")
+        self.assertEqual(added.account_udn, "SA_RINCON52231_X_#Svc52231-1-Token")
+        # Like the add path, the provider's screen name is surfaced for the
+        # nickname-prefill flow even when the credentials are replaced in place.
+        self.assertEqual(added.provider_nickname, "BookCatKid")
+
+    @patch("sonos_account_onboarding.local_soap", side_effect=[HOUSEHOLD, SUCCESS])
+    def test_replace_account_credentials_uses_native_replace_contract(self, soap) -> None:
+        from decode_third_party_media_servers import decrypt_blob
+
+        # ReplaceAccountX's argument list is verified against both the desktop
+        # decomp (FUN_100e61e60 / FUN_1004aced0) and the player's live
+        # SystemProperties SCPD: AccountUDN, NewAccountID, NewAccountPassword,
+        # AccountToken, AccountKey, OAuthDeviceID, NewAccountUDN.
+        credential = DeviceAuthCredential(auth_token="BQBJ-fresh", private_key="priv-key/1786401533373")
+        added = replace_account_credentials(
+            "192.0.2.1",
+            SERVICE,
+            "SA_RINCON52231_X_#Svc52231-1-Token",
+            credential,
+            household_id="Sonos_hh",
+        )
+        self.assertEqual(soap.call_args_list[1].args[3], "ReplaceAccountX")
+        fields = soap.call_args_list[1].args[4]
+        self.assertEqual(
+            list(fields),
+            [
+                "AccountUDN",
+                "NewAccountID",
+                "NewAccountPassword",
+                "AccountToken",
+                "AccountKey",
+                "OAuthDeviceID",
+                "NewAccountUDN",
+            ],
+        )
+        # OAuth-style services leave the legacy credential pair and the new UDN
+        # empty, exactly like the desktop's own replace commit.
+        self.assertEqual(fields["NewAccountID"], "")
+        self.assertEqual(fields["NewAccountPassword"], "")
+        self.assertEqual(fields["NewAccountUDN"], "")
+        # Credential values follow the AddOAuthAccountX envelope contract.
+        self.assertEqual(
+            decrypt_blob(fields["AccountUDN"], "Sonos_hh"),
+            b"SA_RINCON52231_X_#Svc52231-1-Token",
+        )
+        self.assertEqual(decrypt_blob(fields["AccountToken"], "Sonos_hh"), b"BQBJ-fresh")
+        self.assertEqual(decrypt_blob(fields["AccountKey"], "Sonos_hh"), b"priv-key/1786401533373")
+        self.assertEqual(decrypt_blob(fields["OAuthDeviceID"], "Sonos_hh"), b"Sonos_hh")
+        # ReplaceAccountX has no output arguments (SCPD); the existing UDN is
+        # reported unchanged.
+        self.assertEqual(added.account_udn, "SA_RINCON52231_X_#Svc52231-1-Token")
+
+    @patch("sonos_account_onboarding.local_soap", side_effect=[HOUSEHOLD, SUCCESS])
+    def test_replace_account_credentials_normalizes_blob_udn(self, soap) -> None:
+        from decode_third_party_media_servers import decrypt_blob, encode_blob
+
+        blob = encode_blob(b"SA_RINCON52231_X_#Svc52231-1-Token", "Sonos_hh")
+        credential = DeviceAuthCredential(auth_token="BQBJ-fresh", private_key="priv-key")
+        replace_account_credentials(
+            "192.0.2.1", SERVICE, blob, credential, household_id="Sonos_hh"
+        )
+        fields = soap.call_args_list[1].args[4]
+        # The 2: blob from the inventory must be decoded first so the sent
+        # AccountUDN decrypts to the plaintext UDN (no double encoding).
+        self.assertEqual(
+            decrypt_blob(fields["AccountUDN"], "Sonos_hh"),
+            b"SA_RINCON52231_X_#Svc52231-1-Token",
+        )
+
+    @patch("sonos_account_onboarding.local_soap", side_effect=[HOUSEHOLD, SUCCESS])
+    def test_replace_account_credentials_rejects_incomplete_package(self, soap) -> None:
+        credential = DeviceAuthCredential(auth_token="", private_key="")
+        with self.assertRaisesRegex(Exception, "complete credential package"):
+            replace_account_credentials(
+                "192.0.2.1", SERVICE, "SA_RINCON52231_X_#Svc52231-1-Token", credential,
+                household_id="Sonos_hh",
+            )
+        self.assertEqual(soap.call_count, 0)
 
     @patch("sonos_account_onboarding._client")
     def test_devicelink_falls_back_to_legacy_link_code(self, make_client) -> None:
