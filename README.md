@@ -117,11 +117,75 @@ python3 sonos_account_onboarding.py --service-id 236
 python3 sonos_account_onboarding.py --service-id 236 --open-browser --commit
 ```
 
-Anonymous and legacy username/password descriptors use `AddAccountX`; linked
-accounts use `AddOAuthAccountX`. The account type is the descriptor service ID
-encoded with the current player schema revision. A successful player response
-returns the new account UDN and optional provider nickname, after which the
-player replicates the account through the household.
+Anonymous descriptors are already browsable and have no provider credentials to
+commit locally: the player only accepts an empty account ID for anonymous
+`AddAccountX` (any other value is rejected with UPnP error 402), so the resulting
+record is keyless (no provider key or username in its UDN). Such records remain
+browsable and are removed again with the empty-key `RemoveAccount` contract
+(verified live: `RemoveAccount(type, "")` returns 200 and removes exactly that
+service's keyless record); renaming stays unavailable because this firmware
+rejects `SetAccountNicknameX` for every record (UPnP error 402). Legacy username
+and username/password descriptors use `AddAccountX`;
+linked accounts use `AddOAuthAccountX`. The account type is the descriptor
+service ID encoded with the current player schema revision. A successful player
+response returns the new account UDN and optional provider nickname, after which
+the player replicates the account through the household.
+
+## Manage configured accounts
+
+The GUI's **Manage accounts** tab lists every configured household account and
+supports removal, legacy password changes, and reauthorization with the same
+explicit-confirmation rule as adding. Set nickname is disabled: current firmware
+rejects the local `SetAccountNicknameX` action with UPnP error 402 for every
+account, and the Sonos apps rename through their cloud. Keyless records (empty
+username/token/key, from anonymous adds) are flagged in the list and details
+pane: Remove stays enabled because the player resolves them for removal with the
+empty-key contract, verified live. From the command line:
+
+```sh
+# Read-only inventory of configured accounts
+python3 sonos_account_onboarding.py --list-accounts
+
+# Preview any mutation, then re-run with --commit to write it to the household
+python3 sonos_account_onboarding.py --service-id 9 --remove-account SA_RINCON2311_X_#Svc2311-1-Token
+python3 sonos_account_onboarding.py --service-id 9 --remove-account SA_RINCON2311_X_#Svc2311-1-Token --commit
+
+# Change a legacy service's stored password (EditAccountPasswordX)
+python3 sonos_account_onboarding.py --service-id 9 --account-udn SA_RINCON2311_X_#Svc2311-1-Token \
+  --new-password 'secret' --commit
+
+# Replace the stored provider metadata (EditAccountMd)
+python3 sonos_account_onboarding.py --service-id 37 --account-udn SA_RINCON9479_X_#Svc9479-1-Token \
+  --new-md '<metadata/>' --commit
+
+# Push a freshly obtained token/key into the stored record (RefreshAccountCredentialsX)
+python3 sonos_account_onboarding.py --service-id 37 --account-uid 7 --token '...' --key '...' --commit
+
+```
+
+`RemoveAccount` takes the account UDN as the native `AccountID`, exactly as the
+installed controller builds it. `EditAccountPasswordX`/`EditAccountMd` take the
+**account key** — the `X_#Svc…-Token` tail stored as Username0 — as `AccountID`;
+the player rejects the full UDN for edits (UPnP error 806, verified live).
+`RefreshAccountCredentialsX` uses the numeric AccountUID embedded in the UDN.
+Edit operations take `--account-udn` and the key is derived from it; only
+`--remove-account` removes, so the two can never be confused. All mutations
+verify the target player still belongs to the selected household before writing
+anything.
+
+### Reading player faults
+
+When the player rejects a local SystemProperties call it embeds the real reason
+as a numeric UPnP error code inside the SOAP fault detail. `local_soap` now
+surfaces that code in every error, so the Activity tab and the CLI show e.g.
+`Local RemoveAccount failed with HTTP 500: s:Client UPnPError (UPnP error 806:
+account could not be resolved)` instead of the opaque `UPnPError` alone. Codes
+observed against live players: 402 (invalid arguments — returned by
+`SetAccountNicknameX` for every input on current firmware, and by anonymous
+`AddAccountX` for any non-empty account ID), 800 (the legacy `GetWebCode` returns
+this for every service), and 806 (account could not be resolved — an identifier
+that matches no stored account, e.g. the full UDN passed to edit operations,
+which take the account key instead).
 
 ## Service status
 

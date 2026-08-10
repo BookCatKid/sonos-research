@@ -3,13 +3,19 @@ from __future__ import annotations
 import unittest
 from unittest.mock import patch
 
-from smapi_browser import Service
+from smapi_browser import LocalSoapFault, Service
 from sonos_account_onboarding import (
     LinkSession,
     account_type,
     add_credentials,
     begin_link,
     commit_link,
+    edit_account_md,
+    edit_account_password,
+    get_web_code,
+    refresh_account_credentials,
+    remove_account,
+    set_nickname,
 )
 
 SERVICE = Service(204, "Apple Music", "https://example.invalid", "AppLink", 0, {})
@@ -94,6 +100,15 @@ class AccountOnboardingTests(unittest.TestCase):
         self.assertEqual(session.registration_url, "")
 
     @patch("sonos_account_onboarding.local_soap", side_effect=[HOUSEHOLD, SUCCESS])
+    def test_anonymous_service_commits_with_empty_key(self, soap) -> None:
+        anonymous = Service(511, "90s90s Radio", "https://example.invalid", "Anonymous", 0, {})
+        add_credentials("192.0.2.1", anonymous, "", "", household_id="Sonos_hh")
+        self.assertEqual(soap.call_args_list[1].args[3], "AddAccountX")
+        fields = soap.call_args_list[1].args[4]
+        self.assertEqual(fields["AccountType"], str(account_type(511)))
+        self.assertEqual(fields["AccountID"], "")
+
+    @patch("sonos_account_onboarding.local_soap", side_effect=[HOUSEHOLD, SUCCESS])
     def test_legacy_credentials_use_add_account(self, soap) -> None:
         legacy = Service(9, "Legacy", "https://example.invalid", "UserIdPassword", 0, {})
         add_credentials("192.0.2.1", legacy, "user", "pass", household_id="Sonos_hh")
@@ -117,6 +132,149 @@ class AccountOnboardingTests(unittest.TestCase):
         with self.assertRaisesRegex(Exception, "requires a password"):
             add_credentials("192.0.2.1", password, "user", "", household_id="Sonos_hh")
         soap.assert_not_called()
+
+    @patch("sonos_account_onboarding.local_soap", side_effect=[HOUSEHOLD, SUCCESS])
+    def test_remove_account_uses_native_remove_contract(self, soap) -> None:
+        legacy = Service(9, "Legacy", "https://example.invalid", "UserIdPassword", 0, {})
+        remove_account("192.0.2.1", legacy, "SA_RINCON2311_X_#Svc2311-1-Token", household_id="Sonos_hh")
+        self.assertEqual(soap.call_args_list[1].args[3], "RemoveAccount")
+        fields = soap.call_args_list[1].args[4]
+        self.assertEqual(fields["AccountType"], str(account_type(9)))
+        self.assertEqual(fields["AccountID"], "SA_RINCON2311_X_#Svc2311-1-Token")
+
+    @patch("sonos_account_onboarding.local_soap", side_effect=[HOUSEHOLD, SUCCESS])
+    def test_remove_keyless_account_uses_empty_key_contract(self, soap) -> None:
+        anonymous = Service(511, "90s90s Radio", "https://example.invalid", "Anonymous", 0, {})
+        remove_account("192.0.2.1", anonymous, "SA_RINCON130823_", household_id="Sonos_hh")
+        self.assertEqual(soap.call_args_list[1].args[3], "RemoveAccount")
+        fields = soap.call_args_list[1].args[4]
+        self.assertEqual(fields["AccountType"], str(account_type(511)))
+        self.assertEqual(fields["AccountID"], "")
+
+    @patch("sonos_account_onboarding.local_soap", return_value=HOUSEHOLD)
+    def test_remove_account_rejects_missing_udn_before_network(self, soap) -> None:
+        legacy = Service(9, "Legacy", "https://example.invalid", "UserIdPassword", 0, {})
+        with self.assertRaisesRegex(Exception, "account UDN is required"):
+            remove_account("192.0.2.1", legacy, "", household_id="Sonos_hh")
+        soap.assert_not_called()
+
+    @patch("sonos_account_onboarding.local_soap", side_effect=[HOUSEHOLD, SUCCESS])
+    def test_edit_password_uses_native_contract(self, soap) -> None:
+        legacy = Service(9, "Legacy", "https://example.invalid", "UserIdPassword", 0, {})
+        edit_account_password(
+            "192.0.2.1",
+            legacy,
+            "SA_RINCON2311_X_#Svc2311-1-Token",
+            "new-pass",
+            household_id="Sonos_hh",
+        )
+        self.assertEqual(soap.call_args_list[1].args[3], "EditAccountPasswordX")
+        fields = soap.call_args_list[1].args[4]
+        # AccountID is the account key (Username0), not the full UDN: the player
+        # rejects the full UDN for edits (UPnP 806, verified live).
+        self.assertEqual(fields["AccountID"], "X_#Svc2311-1-Token")
+        self.assertEqual(fields["NewAccountPassword"], "new-pass")
+
+    def test_edit_password_rejects_oauth_service_before_network(self) -> None:
+        linked = Service(37, "Linked", "https://example.invalid", "AppLink", 0, {})
+        with self.assertRaisesRegex(Exception, "applies to UserIdPassword"):
+            edit_account_password(
+                "192.0.2.1",
+                linked,
+                "SA_RINCON9479_X_#Svc9479-1-Token",
+                "new-pass",
+                household_id="Sonos_hh",
+            )
+        user_id = Service(8, "User service", "https://example.invalid", "UserId", 0, {})
+        with self.assertRaisesRegex(Exception, "applies to UserIdPassword"):
+            edit_account_password(
+                "192.0.2.1",
+                user_id,
+                "SA_RINCON2055_X_#Svc2055-1-Token",
+                "new-pass",
+                household_id="Sonos_hh",
+            )
+
+    @patch("sonos_account_onboarding.local_soap", side_effect=[HOUSEHOLD, SUCCESS])
+    def test_edit_md_uses_native_contract(self, soap) -> None:
+        service = Service(37, "Linked", "https://example.invalid", "AppLink", 0, {})
+        edit_account_md(
+            "192.0.2.1",
+            service,
+            "SA_RINCON9479_X_#Svc9479-1-Token",
+            "provider-md",
+            household_id="Sonos_hh",
+        )
+        self.assertEqual(soap.call_args_list[1].args[3], "EditAccountMd")
+        fields = soap.call_args_list[1].args[4]
+        self.assertEqual(fields["AccountID"], "X_#Svc9479-1-Token")
+        self.assertEqual(fields["NewAccountMd"], "provider-md")
+
+    def test_set_nickname_translates_firmware_rejection(self) -> None:
+        fault = LocalSoapFault("SetAccountNicknameX", 500, "s:Client", "UPnPError", upnp_code=402)
+        with patch("sonos_account_onboarding.local_soap", side_effect=fault):
+            with self.assertRaisesRegex(Exception, "UPnP error 402.*cloud"):
+                set_nickname("192.0.2.1", "SA_RINCON9479_X_#Svc9479-1-Token", "New name")
+
+    @patch("sonos_account_onboarding.local_soap", side_effect=[HOUSEHOLD, SUCCESS])
+    def test_refresh_credentials_uses_native_contract(self, soap) -> None:
+        service = Service(37, "Linked", "https://example.invalid", "AppLink", 0, {})
+        refresh_account_credentials(
+            "192.0.2.1",
+            service,
+            7,
+            "fresh-token",
+            "fresh-key",
+            household_id="Sonos_hh",
+        )
+        self.assertEqual(soap.call_args_list[1].args[3], "RefreshAccountCredentialsX")
+        fields = soap.call_args_list[1].args[4]
+        self.assertEqual(fields["AccountType"], str(account_type(37)))
+        self.assertEqual(fields["AccountUID"], "7")
+        self.assertEqual(fields["AccountToken"], "fresh-token")
+        self.assertEqual(fields["AccountKey"], "fresh-key")
+
+    @patch("sonos_account_onboarding.local_soap", return_value=HOUSEHOLD)
+    def test_refresh_credentials_rejects_incomplete_pair_before_network(self, soap) -> None:
+        service = Service(37, "Linked", "https://example.invalid", "AppLink", 0, {})
+        with self.assertRaisesRegex(Exception, "Both a token and a key"):
+            refresh_account_credentials("192.0.2.1", service, 7, "token", "", household_id="Sonos_hh")
+        with self.assertRaisesRegex(Exception, "positive numeric AccountUID"):
+            refresh_account_credentials("192.0.2.1", service, 0, "token", "key", household_id="Sonos_hh")
+        soap.assert_not_called()
+
+    @patch(
+        "sonos_account_onboarding.local_soap",
+        return_value=b'''<s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/">
+<s:Body><u:GetWebCodeResponse xmlns:u="urn:schemas-upnp-org:service:SystemProperties:1">
+<WebCode>1234-5678</WebCode></u:GetWebCodeResponse></s:Body></s:Envelope>''',
+    )
+    def test_get_web_code_parses_native_result(self, soap) -> None:
+        service = Service(37, "Linked", "https://example.invalid", "AppLink", 0, {})
+        code = get_web_code("192.0.2.1", service)
+        self.assertEqual(code, "1234-5678")
+        self.assertEqual(soap.call_args.args[3], "GetWebCode")
+        self.assertEqual(soap.call_args.args[4], {"AccountType": str(account_type(37))})
+
+    @patch(
+        "sonos_account_onboarding.local_soap",
+        return_value=b'''<s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/">
+<s:Body><u:GetWebCodeResponse xmlns:u="urn:schemas-upnp-org:service:SystemProperties:1">
+</u:GetWebCodeResponse></s:Body></s:Envelope>''',
+    )
+    def test_get_web_code_rejects_empty_player_result(self, soap) -> None:
+        service = Service(37, "Linked", "https://example.invalid", "AppLink", 0, {})
+        with self.assertRaisesRegex(Exception, "returned no web code"):
+            get_web_code("192.0.2.1", service)
+
+    @patch(
+        "sonos_account_onboarding.local_soap",
+        side_effect=LocalSoapFault("GetWebCode", 500, "s:Client", "UPnPError", upnp_code=800),
+    )
+    def test_get_web_code_translates_player_rejection(self, soap) -> None:
+        service = Service(37, "Linked", "https://example.invalid", "AppLink", 0, {})
+        with self.assertRaisesRegex(Exception, "UPnP error 800.*no account state was changed"):
+            get_web_code("192.0.2.1", service)
 
 
 if __name__ == "__main__":

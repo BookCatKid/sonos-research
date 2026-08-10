@@ -169,6 +169,23 @@ def diagnostic_headers(headers: dict[str, str] | None) -> dict[str, str] | None:
     }
 
 
+#: Human-readable hints for the numeric UPnP error codes the player embeds in
+#: SystemProperties fault details (``<UPnPError><errorCode>``).  Codes 800 and
+#: 806 were observed against a live player (legacy-action rejection and unknown
+#: account respectively); the rest are the standard UPnP Device Architecture
+#: codes.  Codes not listed here fall back to the player-supplied
+#: errorDescription.
+UPNP_ERROR_TEXT = {
+    402: "invalid arguments",
+    501: "action failed",
+    701: "no such object",
+    702: "invalid arguments",
+    714: "illegal value for argument",
+    800: "action not supported for this service/account on this player",
+    806: "account could not be resolved",
+}
+
+
 @dataclass
 class LocalSoapFault(RuntimeError):
     action: str
@@ -176,10 +193,33 @@ class LocalSoapFault(RuntimeError):
     code: str = ""
     message: str = ""
     detail: Any = None
+    upnp_code: int | None = None
+    upnp_description: str = ""
 
     def __str__(self) -> str:
         suffix = f": {self.code} {self.message}".rstrip() if self.code or self.message else ""
+        if self.upnp_code is not None:
+            meaning = (
+                self.upnp_description
+                or UPNP_ERROR_TEXT.get(self.upnp_code, "")
+                or "unspecified UPnP error"
+            )
+            suffix += f" (UPnP error {self.upnp_code}: {meaning})"
         return f"Local {self.action} failed with HTTP {self.http_status}{suffix}"
+
+
+def _upnp_fault_fields(root: ET.Element) -> tuple[int | None, str]:
+    """Extract the numeric UPnP errorCode/errorDescription the player embeds in faults.
+
+    The generic faultstring ("UPnPError") hides the actual failure; the meaningful
+    value lives in ``<detail><UPnPError><errorCode>`` on every player fault we have
+    observed.  A missing/unnumbered detail yields (None, "").
+    """
+    for upnp_error in descendants(root, "UPnPError"):
+        code_text = child_text(upnp_error, "errorCode").strip()
+        if code_text.isdigit():
+            return int(code_text), child_text(upnp_error, "errorDescription").strip()
+    return None, ""
 
 
 def local_soap(
@@ -220,12 +260,15 @@ def local_soap(
         fault_nodes = descendants(root, "Fault")
         fault = fault_nodes[0] if fault_nodes else root
         detail_nodes = descendants(fault, "detail")
+        upnp_code, upnp_description = _upnp_fault_fields(fault)
         raise LocalSoapFault(
             action,
             status,
             child_text(fault, "faultcode") or child_text(root, "errorCode"),
             child_text(fault, "faultstring") or child_text(root, "errorDescription"),
             element_value(detail_nodes[0]) if detail_nodes else element_value(fault),
+            upnp_code=upnp_code,
+            upnp_description=upnp_description,
         )
     return result
 
@@ -327,6 +370,17 @@ class Account:
         if not match:
             raise RuntimeError(f"Account UDN does not contain a numeric AccountUID: {self.udn}")
         return int(match.group(1), 16)
+
+    @property
+    def keyless(self) -> bool:
+        """True for empty-key records (no username, token, or key).
+
+        Such records are stored by the player with an unmanaged
+        ``SA_RINCON<type>_`` UDN: RemoveAccount and SetAccountNicknameX reject
+        them (observed UPnP errors 806 and 402), so management actions should be
+        withheld for them.
+        """
+        return not self.username and not self.token and not self.key
 
 
 def account_content_device_id(household_id: str, account: Account) -> str:

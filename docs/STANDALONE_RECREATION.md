@@ -26,6 +26,20 @@ and cannot accidentally damage a household.
    GUI implement anonymous/credential, modern AppLink, and legacy DeviceLink
    discovery plus explicit-confirmation `AddAccountX`/`AddOAuthAccountX`
    commits. Link sessions are household-bound and credentials remain in memory.
+6. **Music-service account management** — the same module and the GUI's **Manage
+   accounts** tab implement the player's SystemProperties account surface:
+   `RemoveAccount`, `EditAccountPasswordX`, `EditAccountMd`,
+   `RefreshAccountCredentialsX`, `SetAccountNicknameX`, and `GetWebCode`, each
+   with the exact field layout from native decompilation. Every mutation
+   verifies the target player's household before writing. Player rejections now
+   carry the decoded UPnP error code. Live verification refined the contracts:
+   edit operations take the account key (Username0), not the full UDN (806 vs
+   200); local `SetAccountNicknameX` is firmware-rejected (402 for every input)
+   so the GUI disables it; anonymous descriptors commit with an empty account ID
+   into keyless records that stay browsable and are removed again via the
+   empty-key `RemoveAccount` contract (verified live); and the legacy
+   `GetWebCode` returns UPnP error 800 for every service, so it is exposed only
+   through the module/CLI.
 6. **Service status** — `../sonos_service_status.py` provides the safe public
    equivalent of the unproven native outage debug action using Sonos's official
    Statuspage API.

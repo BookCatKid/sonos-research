@@ -1,10 +1,20 @@
 from __future__ import annotations
 
+import json
 import unittest
-from unittest.mock import Mock
+from unittest.mock import Mock, call, patch
 
-from smapi_browser import Service
+from smapi_browser import Account, Service
 from sonos_accounts_gui import SonosExplorerApp
+
+
+def _account(service_id: int = 37, serial: int = 1, **fields: str) -> Account:
+    return Account(
+        service_id,
+        serial,
+        f"SA_RINCON{service_id * 256 + 7}_X_#Svc{service_id * 256 + 7}-1-Token",
+        **fields,
+    )
 
 
 class AccountGuiTests(unittest.TestCase):
@@ -47,6 +57,152 @@ class AccountGuiTests(unittest.TestCase):
         self.assertEqual(app.onboarding_username_var.get(), "")
         self.assertEqual(app.onboarding_password_var.get(), "")
         self.assertEqual(app.onboarding_nickname_var.get(), "")
+
+    def _manage_app(self) -> SonosExplorerApp:
+        app = object.__new__(SonosExplorerApp)
+        legacy = Service(9, "Legacy", "https://example.invalid", "UserIdPassword", 0, {})
+        linked = Service(37, "Linked", "https://example.invalid", "AppLink", 0, {})
+        app.manage_services = {9: legacy, 37: linked}
+        app.manage_accounts = {
+            "manage-9-1": (legacy, _account(9, 1)),
+            "manage-37-1": (linked, _account(37, 1)),
+        }
+        app.manage_tree = Mock()
+        app.manage_tree.selection.return_value = []
+        app.manage_remove_button = Mock()
+        app.manage_rename_button = Mock()
+        app.manage_password_button = Mock()
+        app.manage_reauthorize_button = Mock()
+        app.manage_details = Mock()
+        app.host_var = Mock()
+        app.host_var.get.return_value = "192.0.2.1"
+        app.household_var = Mock()
+        app.household_var.get.return_value = "Sonos_hh"
+        app.timeout_var = Mock()
+        app.timeout_var.get.return_value = "3"
+        app.wait_var = Mock()
+        app.wait_var.get.return_value = "8"
+        app.port_var = Mock()
+        app.port_var.get.return_value = "3411"
+        app.root = Mock()
+        app.busy = False
+        app.summary_var = Mock()
+        app._log = Mock()
+        return app
+
+    def test_manage_selection_controls_password_action_by_auth_type(self) -> None:
+        app = self._manage_app()
+        app.manage_tree.selection.return_value = ["manage-9-1"]
+        app._manage_account_selected()
+        app.manage_password_button.configure.assert_called_once_with(state="normal")
+
+        app.manage_tree.selection.return_value = ["manage-37-1"]
+        app._manage_account_selected()
+        app.manage_password_button.configure.assert_called_with(state="disabled")
+        self.assertEqual(app.manage_reauthorize_button.configure.call_count, 2)
+
+    def test_user_id_service_without_password_disables_password_edit(self) -> None:
+        app = self._manage_app()
+        user_id = Service(8, "User service", "https://example.invalid", "UserId", 0, {})
+        app.manage_accounts["manage-8-1"] = (user_id, _account(8, 1))
+        app.manage_tree.selection.return_value = ["manage-8-1"]
+        app._manage_account_selected()
+        app.manage_password_button.configure.assert_called_with(state="disabled")
+
+    def test_keyless_account_is_flagged_in_details(self) -> None:
+        app = self._manage_app()
+        anonymous = Service(511, "90s90s Radio", "https://example.invalid", "Anonymous", 0, {})
+        keyless = Account(511, 39, "SA_RINCON130823_")
+        app.manage_accounts["manage-511-39"] = (anonymous, keyless)
+        app.manage_tree.selection.return_value = ["manage-511-39"]
+        app._set_text = Mock()
+        app._manage_account_selected()
+        payload = json.loads(app._set_text.call_args.args[1])
+        self.assertIn("keyless_record", payload)
+        self.assertIn("empty-key RemoveAccount contract", payload["keyless_record"])
+
+    def test_keyless_account_enables_remove_but_disables_rename(self) -> None:
+        app = self._manage_app()
+        anonymous = Service(511, "90s90s Radio", "https://example.invalid", "Anonymous", 0, {})
+        keyless = Account(511, 39, "SA_RINCON130823_")
+        app.manage_accounts["manage-511-39"] = (anonymous, keyless)
+        app.manage_tree.selection.return_value = ["manage-511-39"]
+        app._set_text = Mock()
+        app._manage_account_selected()
+        # Keyless records resolve for removal with the empty-key contract (verified live).
+        app.manage_remove_button.configure.assert_called_with(state="normal")
+        app.manage_rename_button.configure.assert_called_with(state="disabled")
+
+    def test_manage_accounts_complete_flags_keyless_state_column(self) -> None:
+        app = self._manage_app()
+        app.notebook = Mock()
+        app.manage_tree.get_children.return_value = []
+        anonymous = Service(511, "90s90s Radio", "https://example.invalid", "Anonymous", 0, {})
+        linked = Service(37, "Linked", "https://example.invalid", "AppLink", 0, {})
+        app._manage_accounts_complete(
+            (
+                "Sonos_hh",
+                {511: anonymous, 37: linked},
+                [Account(511, 39, "SA_RINCON130823_"), _account(37, 1, token="tok", key="key")],
+            )
+        )
+        states = [call.kwargs["values"][-1] for call in app.manage_tree.insert.call_args_list]
+        self.assertIn("keyless", states)
+        self.assertIn("linked", states)
+
+    def test_manage_no_selection_disables_all_actions(self) -> None:
+        app = self._manage_app()
+        app._manage_account_selected()
+        app.manage_remove_button.configure.assert_called_once_with(state="disabled")
+        app.manage_rename_button.configure.assert_called_once_with(state="disabled")
+        app.manage_reauthorize_button.configure.assert_called_once_with(state="disabled")
+
+    def test_manage_remove_uses_native_remove_contract(self) -> None:
+        app = self._manage_app()
+        app.manage_tree.selection.return_value = ["manage-9-1"]
+        app._manage_account_selected()
+        with patch("sonos_accounts_gui.onboarding.player_household", return_value="Sonos_hh"), patch(
+            "sonos_accounts_gui.messagebox.askyesno", return_value=True
+        ), patch("sonos_accounts_gui.onboarding.remove_account") as remove, patch.object(
+            SonosExplorerApp, "_run_task", side_effect=lambda label, work, success: success(work())
+        ), patch("sonos_accounts_gui.messagebox.showinfo"):
+            app.manage_remove_account()
+        remove.assert_called_once()
+        args = remove.call_args.args
+        kwargs = remove.call_args.kwargs
+        self.assertEqual(args[0], "192.0.2.1")
+        self.assertEqual(args[2], _account(9, 1).udn)
+        self.assertEqual(kwargs["household_id"], "Sonos_hh")
+
+    def test_manage_remove_keyless_passes_truncated_udn(self) -> None:
+        app = self._manage_app()
+        anonymous = Service(511, "90s90s Radio", "https://example.invalid", "Anonymous", 0, {})
+        keyless = Account(511, 39, "SA_RINCON130823_")
+        app.manage_accounts["manage-511-39"] = (anonymous, keyless)
+        app.manage_tree.selection.return_value = ["manage-511-39"]
+        app._manage_account_selected()
+        with patch("sonos_accounts_gui.onboarding.player_household", return_value="Sonos_hh"), patch(
+            "sonos_accounts_gui.messagebox.askyesno", return_value=True
+        ), patch("sonos_accounts_gui.onboarding.remove_account") as remove, patch.object(
+            SonosExplorerApp, "_run_task", side_effect=lambda label, work, success: success(work())
+        ), patch("sonos_accounts_gui.messagebox.showinfo"):
+            app.manage_remove_account()
+        remove.assert_called_once()
+        # The keyless record's truncated UDN is passed through; the empty-key
+        # contract is applied inside onboarding.remove_account.
+        self.assertEqual(remove.call_args.args[2], "SA_RINCON130823_")
+
+    def test_manage_rename_is_firmware_blocked(self) -> None:
+        app = self._manage_app()
+        app.manage_tree.selection.return_value = ["manage-37-1"]
+        app._manage_account_selected()
+        self.assertEqual(app.manage_rename_button.configure.call_args_list[-1], call(state="disabled"))
+        with patch("sonos_accounts_gui.messagebox.showinfo") as info, patch(
+            "sonos_accounts_gui.onboarding.set_nickname"
+        ) as rename:
+            app.manage_set_nickname()
+        rename.assert_not_called()
+        self.assertIn("UPnP error 402", info.call_args.args[1])
 
 
 if __name__ == "__main__":

@@ -47,6 +47,7 @@ from tkinter import (
     Tk,
     filedialog,
     messagebox,
+    simpledialog,
 )
 from tkinter import ttk
 from typing import Any, Callable
@@ -617,6 +618,9 @@ class SonosExplorerApp:
         self.browser_detail_image: Any = None
         self.onboarding_services: dict[str, smapi.Service] = {}
         self.onboarding_session: onboarding.LinkSession | None = None
+        self.manage_services: dict[int, smapi.Service] = {}
+        self.manage_accounts: dict[str, tuple[smapi.Service, smapi.Account]] = {}
+        self.manage_reauthorize_session: onboarding.LinkSession | None = None
         self.last_export: dict[str, Any] = {}
         self.busy = False
 
@@ -763,6 +767,7 @@ class SonosExplorerApp:
         self._build_services_tab()
         self._build_accounts_tab()
         self._build_add_account_tab()
+        self._build_manage_tab()
         self._build_browser_tab()
         self._build_json_tab()
         self._build_log_tab()
@@ -915,6 +920,98 @@ class SonosExplorerApp:
         ).grid(row=7, column=0, columnspan=3, sticky="w", pady=(16, 0))
 
         self.onboarding_service_combo.bind("<<ComboboxSelected>>", self._onboarding_service_selected)
+
+    def _build_manage_tab(self) -> None:
+        tab = ttk.Frame(self.notebook, style="Panel.TFrame", padding=10)
+        self.notebook.add(tab, text="Manage accounts")
+
+        toolbar = ttk.Frame(tab, style="Panel.TFrame")
+        toolbar.pack(fill="x", pady=(0, 8))
+        ttk.Label(toolbar, text="Configured accounts", style="Panel.TLabel").pack(side=LEFT)
+        self.manage_load_button = ttk.Button(
+            toolbar,
+            text="Load accounts",
+            style="Secondary.TButton",
+            command=self.load_manage_accounts,
+        )
+        self.manage_load_button.pack(side=LEFT, padx=(10, 0))
+        ttk.Label(
+            toolbar,
+            text="Every action below requires explicit confirmation and names the exact household and operation.",
+            style="Muted.TLabel",
+        ).pack(side=RIGHT)
+
+        pane = ttk.Panedwindow(tab, orient=HORIZONTAL)
+        pane.pack(fill="both", expand=True)
+        table_frame = ttk.Frame(pane, style="Panel.TFrame")
+        details_frame = ttk.Frame(pane, style="Panel.TFrame")
+        pane.add(table_frame, weight=3)
+        pane.add(details_frame, weight=2)
+
+        columns = ("service", "auth", "serial", "nickname", "username", "state")
+        self.manage_tree = ttk.Treeview(table_frame, columns=columns, show="headings", selectmode="browse")
+        headings = {
+            "service": ("Service", 180),
+            "auth": ("Auth", 90),
+            "serial": ("Serial", 60),
+            "nickname": ("Nickname", 140),
+            "username": ("Username", 150),
+            "state": ("State", 110),
+        }
+        for key, (label, width) in headings.items():
+            self.manage_tree.heading(key, text=label)
+            self.manage_tree.column(key, width=width, minwidth=45, stretch=key in ("service", "nickname", "username"))
+
+        yscroll = ttk.Scrollbar(table_frame, orient="vertical", command=self.manage_tree.yview)
+        xscroll = ttk.Scrollbar(table_frame, orient="horizontal", command=self.manage_tree.xview)
+        self.manage_tree.configure(yscrollcommand=yscroll.set, xscrollcommand=xscroll.set)
+        self.manage_tree.grid(row=0, column=0, sticky="nsew")
+        yscroll.grid(row=0, column=1, sticky="ns")
+        xscroll.grid(row=1, column=0, sticky="ew")
+        table_frame.rowconfigure(0, weight=1)
+        table_frame.columnconfigure(0, weight=1)
+
+        actions = ttk.Frame(details_frame, style="Panel.TFrame")
+        actions.pack(fill="x", pady=(0, 8))
+        self.manage_remove_button = ttk.Button(
+            actions, text="Remove…", style="Secondary.TButton", command=self.manage_remove_account
+        )
+        self.manage_remove_button.pack(fill="x", pady=(0, 6))
+        self.manage_rename_button = ttk.Button(
+            actions, text="Set nickname…", style="Secondary.TButton", command=self.manage_set_nickname
+        )
+        self.manage_rename_button.pack(fill="x", pady=(0, 6))
+        self.manage_password_button = ttk.Button(
+            actions, text="Change password…", style="Secondary.TButton", command=self.manage_change_password
+        )
+        self.manage_password_button.pack(fill="x", pady=(0, 6))
+        self.manage_reauthorize_button = ttk.Button(
+            actions, text="Reauthorize…", style="Secondary.TButton", command=self.manage_reauthorize
+        )
+        self.manage_reauthorize_button.pack(fill="x", pady=(0, 6))
+        ttk.Label(
+            actions,
+            text=(
+                "RemoveAccount uses the account UDN as the native AccountID. Edit operations use the "
+                "account key (Username0) — the player rejects the full UDN for them. Set nickname is "
+                "disabled: this firmware rejects SetAccountNicknameX (UPnP 402); the Sonos apps rename "
+                "via cloud. Keyless records (empty-key anonymous adds) are removed with the "
+                "empty-key RemoveAccount contract, verified live."
+            ),
+            style="Muted.TLabel",
+            wraplength=320,
+        ).pack(anchor="w", pady=(8, 0))
+
+        ttk.Label(details_frame, text="Selected account", style="Panel.TLabel").pack(anchor="w", pady=(0, 7))
+        self.manage_details = self._make_text(details_frame)
+        self.manage_details.pack(fill="both", expand=True)
+        self._set_text(self.manage_details, "Load accounts, then select one to manage.")
+
+        self.manage_tree.bind("<<TreeviewSelect>>", self._manage_account_selected)
+        self.manage_remove_button.configure(state="disabled")
+        self.manage_rename_button.configure(state="disabled")
+        self.manage_password_button.configure(state="disabled")
+        self.manage_reauthorize_button.configure(state="disabled")
 
     def _build_browser_tab(self) -> None:
         tab = ttk.Frame(self.notebook, style="Panel.TFrame", padding=10)
@@ -1140,6 +1237,11 @@ class SonosExplorerApp:
             self.onboarding_load_button,
             self.onboarding_start_button,
             self.onboarding_commit_button,
+            self.manage_load_button,
+            self.manage_remove_button,
+            self.manage_rename_button,
+            self.manage_password_button,
+            self.manage_reauthorize_button,
             self.browser_load_button,
             self.browser_back_button,
             self.browser_previous_button,
@@ -1148,6 +1250,9 @@ class SonosExplorerApp:
         ):
             button.configure(state=state)
         self.onboarding_service_combo.configure(state="readonly" if enabled else "disabled")
+        if enabled and self.manage_accounts:
+            # Restore selection-driven enablement after a background task.
+            self._manage_account_selected()
 
     def discover(self) -> None:
         try:
@@ -1326,7 +1431,7 @@ class SonosExplorerApp:
         if not service:
             return
         descriptions = {
-            "Anonymous": "Anonymous: no provider login. Commit creates the household service record.",
+            "Anonymous": "Anonymous: no provider login. Commit creates the household service record (keyless, browsable, removable via the empty-key contract).",
             "UserId": "Legacy credentials: username is committed through AddAccountX.",
             "UserIdPassword": "Legacy credentials: username/password are committed through AddAccountX.",
             "DeviceLink": "Legacy device link: getAppLink is attempted, then getDeviceLinkCode as the official fallback.",
@@ -1473,6 +1578,321 @@ class SonosExplorerApp:
             parent=self.root,
         )
 
+    def load_manage_accounts(self) -> None:
+        try:
+            host, household, timeout, _wait, _port = self._connection_values(require_household=False)
+        except SonosError as exc:
+            messagebox.showerror("Sonos Service Explorer", str(exc), parent=self.root)
+            return
+
+        def work() -> tuple[str, dict[int, smapi.Service], list[smapi.Account]]:
+            actual_household = household
+            if not actual_household:
+                actual_household = discover_matching_player(host, timeout).household
+            services, accounts = smapi.inventory(host, actual_household)
+            return actual_household, services, accounts
+
+        self._run_task("Loading configured accounts…", work, self._manage_accounts_complete)
+
+    def _manage_accounts_complete(
+        self,
+        result: tuple[str, dict[int, smapi.Service], list[smapi.Account]],
+    ) -> None:
+        household, services, accounts = result
+        self.household_var.set(household)
+        self.manage_services = services
+        self.manage_accounts = {}
+        for item in self.manage_tree.get_children():
+            self.manage_tree.delete(item)
+        if not accounts:
+            self._set_text(self.manage_details, "No configured accounts were found in this household.")
+            self.summary_var.set("No configured music-service accounts")
+            return
+        for account in sorted(accounts, key=lambda value: (value.service_id, value.serial)):
+            service = services.get(account.service_id)
+            if not service:
+                continue
+            iid = f"manage-{account.service_id}-{account.serial}"
+            self.manage_accounts[iid] = (service, account)
+            if account.token == "needs_reauth":
+                state = "needs reauth"
+            elif account.keyless:
+                state = "keyless"
+            elif account.token:
+                state = "linked"
+            else:
+                state = "credential"
+            self.manage_tree.insert(
+                "",
+                END,
+                iid=iid,
+                values=(
+                    service.name,
+                    service.auth,
+                    account.serial,
+                    account.nickname,
+                    account.username,
+                    state,
+                ),
+            )
+        self.summary_var.set(f"Loaded {len(self.manage_accounts)} configured account{'s' if len(self.manage_accounts) != 1 else ''}")
+        self.notebook.select(3)
+
+    def _selected_manage_account(self) -> tuple[smapi.Service, smapi.Account] | None:
+        selection = self.manage_tree.selection()
+        if not selection:
+            return None
+        return self.manage_accounts.get(selection[0])
+
+    def _manage_account_selected(self, _event: object | None = None) -> None:
+        pair = self._selected_manage_account()
+        enabled = pair is not None
+        # Remove works for every record: keyed accounts resolve by their UDN, and
+        # keyless records resolve with the empty-key contract (verified live).
+        self.manage_remove_button.configure(state="normal" if enabled else "disabled")
+        # Local SetAccountNicknameX is rejected by this firmware (UPnP 402 on
+        # every input, verified against the live player); the Sonos apps rename
+        # through their cloud, so the local rename affordance stays disabled.
+        self.manage_rename_button.configure(state="disabled")
+        self.manage_reauthorize_button.configure(state="normal" if enabled else "disabled")
+        if pair is None:
+            return
+        service, account = pair
+        password_ok = service.auth == "UserIdPassword" and enabled
+        self.manage_password_button.configure(state="normal" if password_ok else "disabled")
+        keyless = account.keyless
+        details = {
+            "service_id": service.service_id,
+            "service": service.name,
+            "auth": service.auth,
+            "serial": account.serial,
+            "udn": account.udn,
+            "username": account.username,
+            "nickname": account.nickname,
+            "has_token": bool(account.token),
+            "needs_reauth": account.token == "needs_reauth",
+        }
+        details["rename_note"] = (
+            "Set nickname is disabled: this player's firmware rejects SetAccountNicknameX with UPnP "
+            "error 402 for every account; the Sonos apps rename accounts through their cloud."
+        )
+        if keyless:
+            details["keyless_record"] = (
+                "This record has no provider key or username (empty-key anonymous record). Remove "
+                "uses the empty-key RemoveAccount contract, which the player resolves for this "
+                "service's keyless record (verified live); Set nickname stays disabled."
+            )
+        self._set_text(self.manage_details, json.dumps(details, indent=2, sort_keys=True))
+
+    def _manage_confirmation(self, operation: str, service: smapi.Service, extra: str = "") -> str | None:
+        try:
+            host, household, _timeout, _wait, _port = self._connection_values(require_household=True)
+        except SonosError as exc:
+            messagebox.showerror("Sonos Service Explorer", str(exc), parent=self.root)
+            return None
+        try:
+            actual_household = onboarding.player_household(host)
+        except (onboarding.OnboardingError, OSError, smapi.LocalSoapFault, ET.ParseError) as exc:
+            messagebox.showerror(
+                "Sonos Service Explorer",
+                f"Could not verify the target player's household: {exc}",
+                parent=self.root,
+            )
+            return None
+        if actual_household != household:
+            messagebox.showerror(
+                "Sonos Service Explorer",
+                f"The selected player now belongs to {actual_household}, not {household}. Reload before managing accounts.",
+                parent=self.root,
+            )
+            return None
+        message = (
+            f"Household: {actual_household}\nPlayer: {host}\nService: {service.name} ({service.service_id})\n"
+            f"Operation: {operation}\n"
+        )
+        if extra:
+            message += f"{extra}\n"
+        message += "\nThis writes to every player in the household. Continue?"
+        if not messagebox.askyesno("Sonos account management", message, parent=self.root):
+            return None
+        return actual_household
+
+    def manage_remove_account(self) -> None:
+        pair = self._selected_manage_account()
+        if not pair:
+            return
+        service, account = pair
+        keyless_note = (
+            "\n\nThis record has no provider key; removal uses the empty-key contract for this "
+            "service only." if account.keyless else ""
+        )
+        household_id = self._manage_confirmation(
+            "RemoveAccount",
+            service,
+            f"Account UDN: {account.udn}\n\nThis removes the account from the household. Its queue entries stop resolving."
+            + keyless_note,
+        )
+        if not household_id:
+            return
+        host = self.host_var.get().strip()
+
+        def work() -> None:
+            onboarding.remove_account(host, service, account.udn, household_id=household_id)
+
+        self._run_task(f"Removing {service.name} account…", work, self._manage_remove_complete)
+
+    def _manage_remove_complete(self, _result: None) -> None:
+        self.summary_var.set("Account removed. Reload Manage accounts to confirm replication.")
+        self._log("RemoveAccount completed for the selected household account")
+        messagebox.showinfo(
+            "Sonos Service Explorer",
+            "The account was removed from the household. Reload Manage accounts to verify.",
+            parent=self.root,
+        )
+
+    def manage_set_nickname(self) -> None:
+        # Kept only so the disabled button's command binding does not dangle; the
+        # action itself is firmware-blocked and never invoked through the UI.
+        messagebox.showinfo(
+            "Sonos Service Explorer",
+            "Set nickname is disabled: this player's firmware (90.0) rejects the local "
+            "SetAccountNicknameX action with UPnP error 402 for every account (verified against the "
+            "live player). The Sonos apps rename accounts through their cloud instead.",
+            parent=self.root,
+        )
+
+    def manage_change_password(self) -> None:
+        pair = self._selected_manage_account()
+        if not pair:
+            return
+        service, account = pair
+        if service.auth != "UserIdPassword":
+            messagebox.showinfo(
+                "Sonos Service Explorer",
+                f"{service.name} uses {service.auth}; EditAccountPasswordX applies to UserIdPassword services.",
+                parent=self.root,
+            )
+            return
+        new_password = simpledialog.askstring(
+            "Change stored password",
+            f"New password for {service.name} (serial {account.serial}):",
+            show="•",
+            parent=self.root,
+        )
+        if not new_password:
+            return
+        household_id = self._manage_confirmation(
+            "EditAccountPasswordX",
+            service,
+            f"Account UDN: {account.udn}",
+        )
+        if not household_id:
+            return
+        host = self.host_var.get().strip()
+
+        def work() -> None:
+            onboarding.edit_account_password(host, service, account.udn, new_password, household_id=household_id)
+
+        self._run_task(f"Updating {service.name} password…", work, self._manage_password_complete)
+
+    def _manage_password_complete(self, _result: None) -> None:
+        self.summary_var.set("Stored password updated.")
+        self._log("EditAccountPasswordX completed for the selected account")
+        messagebox.showinfo(
+            "Sonos Service Explorer",
+            "The stored password was updated on the household players.",
+            parent=self.root,
+        )
+
+    def manage_reauthorize(self) -> None:
+        pair = self._selected_manage_account()
+        if not pair:
+            return
+        service, account = pair
+        if service.auth not in onboarding.AUTH_OPERATIONS:
+            messagebox.showerror(
+                "Sonos Service Explorer",
+                f"{service.name} uses unsupported authentication type {service.auth!r}",
+                parent=self.root,
+            )
+            return
+        if onboarding.AUTH_OPERATIONS[service.auth] != "AddOAuthAccountX":
+            if service.auth == "Anonymous":
+                messagebox.showinfo(
+                    "Sonos Service Explorer",
+                    f"{service.name} is an anonymous service: no provider credentials exist, so there "
+                    "is nothing to reauthorize or change.",
+                    parent=self.root,
+                )
+            else:
+                messagebox.showinfo(
+                    "Sonos Service Explorer",
+                    f"{service.name} uses {service.auth}; use Change password for legacy credential accounts.",
+                    parent=self.root,
+                )
+            return
+        try:
+            host, household, _timeout, _wait, _port = self._connection_values(require_household=True)
+        except SonosError as exc:
+            messagebox.showerror("Sonos Service Explorer", str(exc), parent=self.root)
+            return
+        if not messagebox.askyesno(
+            "Reauthorize account",
+            f"Household: {household}\nPlayer: {host}\nService: {service.name} ({service.service_id})\n"
+            f"Account: {account.udn}\n\n"
+            "This starts the provider link flow and, after you authorize, commits a fresh "
+            "AddOAuthAccountX record to the household. Continue?",
+            parent=self.root,
+        ):
+            return
+        callback = f"sonos://addAccount?state={secrets.token_urlsafe(24)}"
+        self._run_task(
+            f"Requesting {service.name} reauthorization…",
+            lambda: onboarding.begin_link(host, household, service, callback_path=callback),
+            lambda session: self._manage_reauthorize_link_ready(session, host, service),
+        )
+
+    def _manage_reauthorize_link_ready(
+        self,
+        session: onboarding.LinkSession,
+        host: str,
+        service: smapi.Service,
+    ) -> None:
+        self.manage_reauthorize_session = session
+        if not session.standalone_supported:
+            messagebox.showerror(
+                "Sonos Service Explorer",
+                "The provider returned no standalone browser path for reauthorization.",
+                parent=self.root,
+            )
+            return
+        webbrowser.open(session.registration_url)
+        if not messagebox.askyesno(
+            "Finish provider sign-in",
+            f"Open in the browser and finish signing in. After the provider confirms, commit the new account?\n\n"
+            f"Provider URL: {session.registration_url}",
+            parent=self.root,
+        ):
+            return
+
+        def work() -> onboarding.AddedAccount:
+            return onboarding.commit_link(host, service, session)
+
+        self._run_task(f"Committing reauthorized {service.name} account…", work, self._manage_reauthorize_complete)
+
+    def _manage_reauthorize_complete(self, result: onboarding.AddedAccount) -> None:
+        self.manage_reauthorize_session = None
+        self.summary_var.set(
+            f"Reauthorized {result.service_name}. Reload Manage accounts; the old account can be removed there."
+        )
+        self._log(f"Reauthorization committed a new account: {result.account_udn}")
+        messagebox.showinfo(
+            "Sonos Service Explorer",
+            f"A fresh {result.service_name} account was committed.\n\nAccount UDN: {result.account_udn}\n\n"
+            "Reload Manage accounts to see it; the previous account can be removed with Remove.",
+            parent=self.root,
+        )
+
     def load_browser_accounts(self) -> None:
         try:
             host, household, timeout, _wait, _port = self._connection_values(require_household=False)
@@ -1525,7 +1945,7 @@ class SonosExplorerApp:
         labels = list(contexts)
         self.browser_account_combo.configure(values=labels)
         self.browser_account_var.set(labels[0])
-        self.notebook.select(3)
+        self.notebook.select(4)
         self.root.after(0, self._browse_root)
 
     def _browser_account_selected(self, _event: object | None = None) -> None:

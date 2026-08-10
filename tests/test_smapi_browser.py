@@ -30,6 +30,7 @@ from smapi_browser import (
     host_device_id,
     legacy_item_kind,
     local_name,
+    local_soap,
     parse_accounts,
     redact_diagnostic,
 )
@@ -667,6 +668,78 @@ class CrawlTests(unittest.TestCase):
         cycle = report["tree"]["items"][0]["children"]["items"][0]["children"]
         self.assertEqual(cycle["status"], "reference")
         self.assertEqual(report["stats"]["collections_opened"], 2)
+
+
+class LocalSoapFaultParsingTests(unittest.TestCase):
+    """The player's real UPnP error code must reach the caller's error message."""
+
+    SYSTEM_PROPERTIES = "urn:schemas-upnp-org:service:SystemProperties:1"
+
+    def _fault(self, body: bytes) -> LocalSoapFault:
+        class FakeResponse:
+            status = 500
+
+            def read(self) -> bytes:
+                return body
+
+        class FakeConnection:
+            def __init__(self, _host, _port, timeout=None):
+                pass
+
+            def request(self, *_args, **_kwargs):
+                pass
+
+            def getresponse(self):
+                return FakeResponse()
+
+            def close(self):
+                pass
+
+        with patch("smapi_browser.http.client.HTTPConnection", FakeConnection):
+            with self.assertRaises(LocalSoapFault) as caught:
+                local_soap(
+                    "192.0.2.1",
+                    "/SystemProperties/Control",
+                    self.SYSTEM_PROPERTIES,
+                    "RemoveAccount",
+                    {"AccountType": "130823", "AccountID": "SA_RINCON130823_"},
+                )
+        return caught.exception
+
+    def test_upnp_error_code_is_surfaced(self) -> None:
+        fault = self._fault(
+            b'''<s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/"><s:Body><s:Fault>
+<faultcode>s:Client</faultcode><faultstring>UPnPError</faultstring><detail>
+<UPnPError xmlns="urn:schemas-upnp-org:control-1-0"><errorCode>806</errorCode></UPnPError>
+</detail></s:Fault></s:Body></s:Envelope>'''
+        )
+        self.assertEqual(fault.upnp_code, 806)
+        self.assertIn("s:Client UPnPError", str(fault))
+        self.assertIn("UPnP error 806: account could not be resolved", str(fault))
+
+    def test_player_error_description_is_kept(self) -> None:
+        fault = self._fault(
+            b'''<s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/"><s:Body><s:Fault>
+<faultcode>s:Client</faultcode><faultstring>UPnPError</faultstring><detail>
+<UPnPError xmlns="urn:schemas-upnp-org:control-1-0"><errorCode>701</errorCode>
+<errorDescription>No such object</errorDescription></UPnPError>
+</detail></s:Fault></s:Body></s:Envelope>'''
+        )
+        self.assertEqual(fault.upnp_code, 701)
+        self.assertEqual(fault.upnp_description, "No such object")
+        self.assertIn("UPnP error 701: No such object", str(fault))
+
+    def test_fault_without_upnp_detail_keeps_previous_message(self) -> None:
+        fault = self._fault(
+            b'''<s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/"><s:Body><s:Fault>
+<faultcode>s:Client</faultcode><faultstring>UPnPError</faultstring></s:Fault>
+</s:Body></s:Envelope>'''
+        )
+        self.assertIsNone(fault.upnp_code)
+        self.assertEqual(
+            str(fault),
+            "Local RemoveAccount failed with HTTP 500: s:Client UPnPError",
+        )
 
 
 if __name__ == "__main__":
