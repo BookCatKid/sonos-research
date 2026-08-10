@@ -34,8 +34,12 @@ and cannot accidentally damage a household.
    verifies the target player's household before writing. Player rejections now
    carry the decoded UPnP error code. Live verification refined the contracts:
    edit operations take the account key (Username0), not the full UDN (806 vs
-   200); local `SetAccountNicknameX` is firmware-rejected (402 for every input)
-   so the GUI disables it; anonymous descriptors commit with an empty account ID
+   200); local `SetAccountNicknameX` renames any account once `AccountUDN` and
+   the nickname are wrapped in the household `2:` envelope (AES-128-CBC under the
+   household-derived key) — plaintext values are rejected with UPnP error 402, and
+   the working form was cracked from a wire capture of the Windows controller and
+   verified live on keyed and keyless records alike; anonymous descriptors commit
+   with an empty account ID
    into keyless records that stay browsable and are removed again via the
    empty-key `RemoveAccount` contract (verified live); and the legacy
    `GetWebCode` returns UPnP error 800 for every service, so it is exposed only

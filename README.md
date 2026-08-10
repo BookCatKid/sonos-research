@@ -123,9 +123,10 @@ commit locally: the player only accepts an empty account ID for anonymous
 record is keyless (no provider key or username in its UDN). Such records remain
 browsable and are removed again with the empty-key `RemoveAccount` contract
 (verified live: `RemoveAccount(type, "")` returns 200 and removes exactly that
-service's keyless record); renaming stays unavailable because this firmware
-rejects `SetAccountNicknameX` for every record (UPnP error 402). Legacy username
-and username/password descriptors use `AddAccountX`;
+service's keyless record); renaming works for keyless records too — the player
+accepts `SetAccountNicknameX` for them (verified live), even though the official
+app hides the action for anonymous accounts (see Manage). Legacy username and
+username/password descriptors use `AddAccountX`;
 linked accounts use `AddOAuthAccountX`. The account type is the descriptor
 service ID encoded with the current player schema revision. A successful player
 response returns the new account UDN and optional provider nickname, after which
@@ -134,13 +135,21 @@ the player replicates the account through the household.
 ## Manage configured accounts
 
 The GUI's **Manage accounts** tab lists every configured household account and
-supports removal, legacy password changes, and reauthorization with the same
-explicit-confirmation rule as adding. Set nickname is disabled: current firmware
-rejects the local `SetAccountNicknameX` action with UPnP error 402 for every
-account, and the Sonos apps rename through their cloud. Keyless records (empty
-username/token/key, from anonymous adds) are flagged in the list and details
-pane: Remove stays enabled because the player resolves them for removal with the
-empty-key contract, verified live. From the command line:
+supports removal, renaming, legacy password changes, and reauthorization with
+the same explicit-confirmation rule as adding. Set nickname renames keyed
+(non-anonymous) accounts through the local `SetAccountNicknameX`: both
+`AccountUDN` and the nickname must be wrapped in the household `2:` envelope
+(AES-128-CBC under the household-derived key, the same envelope as
+`ThirdPartyMediaServersX`) — sending plaintext values is rejected with UPnP
+error 402. The envelope was cracked from a wire capture of the Windows
+controller (which was observed renaming an account locally) and verified live:
+`SetAccountNicknameX` returns 200 and the inventory reflects the new nickname.
+Rename works for keyless records too — the player accepts `SetAccountNicknameX`
+for them (verified live), even though the official app hides the action for
+anonymous accounts. Keyless records (empty username/token/key, from anonymous
+adds) are flagged in the list and details pane: Remove stays enabled because the
+player resolves them for removal with the empty-key contract, verified live.
+From the command line:
 
 ```sh
 # Read-only inventory of configured accounts
@@ -180,12 +189,12 @@ as a numeric UPnP error code inside the SOAP fault detail. `local_soap` now
 surfaces that code in every error, so the Activity tab and the CLI show e.g.
 `Local RemoveAccount failed with HTTP 500: s:Client UPnPError (UPnP error 806:
 account could not be resolved)` instead of the opaque `UPnPError` alone. Codes
-observed against live players: 402 (invalid arguments — returned by
-`SetAccountNicknameX` for every input on current firmware, and by anonymous
-`AddAccountX` for any non-empty account ID), 800 (the legacy `GetWebCode` returns
-this for every service), and 806 (account could not be resolved — an identifier
-that matches no stored account, e.g. the full UDN passed to edit operations,
-which take the account key instead).
+observed against live players: 402 (invalid arguments — returned for plaintext
+`SetAccountNicknameX` values, which must instead be wrapped in the household
+`2:` envelope, and by anonymous `AddAccountX` for any non-empty account ID), 800
+(the legacy `GetWebCode` returns this for every service), and 806 (account could
+not be resolved — an identifier that matches no stored account, e.g. the full
+UDN passed to edit operations, which take the account key instead).
 
 ## Service status
 

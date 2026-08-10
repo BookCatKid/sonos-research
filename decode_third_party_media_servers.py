@@ -9,6 +9,7 @@ import hashlib
 import html
 import http.client
 import json
+import os
 import queue
 import re
 import socket
@@ -164,6 +165,38 @@ def decrypt_blob(encoded: str, household: str) -> bytes:
     if hashlib.md5(payload).digest()[:4] != checksum:  # protocol integrity field
         raise RuntimeError("Embedded MD5 checksum mismatch")
     return payload
+
+
+def aes_128_cbc_encrypt(plaintext: bytes, key: bytes, iv: bytes) -> bytes:
+    result = subprocess.run(
+        ["openssl", "enc", "-aes-128-cbc", "-K", key.hex(), "-iv", iv.hex()],
+        input=plaintext,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        check=False,
+    )
+    if result.returncode != 0:
+        raise RuntimeError("AES-CBC encryption failed")
+    return result.stdout
+
+
+def encode_blob(plaintext: bytes, household: str) -> str:
+    """Wrap a plaintext value in the household ``2:`` account envelope.
+
+    Exact mirror of ``decrypt_blob``: plaintext + 4-byte MD5 prefix, PKCS#7
+    padded by openssl, encrypted with AES-128-CBC under the household-derived
+    key, then ``2:`` + base64(iv + ciphertext).  The official controller wraps
+    every account value it sends to SystemProperties (AccountUDN, nickname,
+    etc.) in this envelope; plaintext values are rejected by the player with
+    UPnP error 402.  The format was confirmed from a wire capture of the
+    Windows controller and verified live against a household player.
+    """
+    body = plaintext + hashlib.md5(plaintext).digest()[:4]  # protocol integrity field
+    iv = os.urandom(16)
+    global_key = hashlib.md5(household.encode("utf-8") + SALT).digest()  # protocol primitive
+    blob_key = hashlib.md5(iv + global_key).digest()  # protocol primitive
+    ciphertext = aes_128_cbc_encrypt(body, blob_key, iv)
+    return "2:" + base64.b64encode(iv + ciphertext).decode("ascii")
 
 
 def scalar_summary(value: Any, key: str = "") -> dict[str, Any]:

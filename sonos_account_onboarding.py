@@ -21,8 +21,10 @@ from smapi_browser import (
     LocalSoapFault,
     Service,
     SmapiClient,
+    decrypt_blob,
     descendants,
     element_value,
+    encode_blob,
     inventory,
     local_soap,
     parse_services,
@@ -40,7 +42,8 @@ CURRENT_ACCOUNT_SCHEMA = 7
 #: begin_link can still validate/preview it; add_credentials commits an
 #: empty-key AddAccountX, which stores a keyless record that stays browsable and
 #: is removed again via the empty-key RemoveAccount contract (verified live).
-#: Rename stays firmware-rejected for every record (UPnP error 402).
+#: Rename works through SetAccountNicknameX once both values are wrapped in the
+#: household ``2:`` envelope (verified live on keyed and keyless records alike).
 AUTH_OPERATIONS = {
     "Anonymous": "AddAccountX",
     "UserId": "AddAccountX",
@@ -343,21 +346,42 @@ def add_credentials(
     return _parse_add_response(service, response)
 
 
-def set_nickname(host: str, account_udn: str, nickname: str) -> None:
+def set_nickname(host: str, account_udn: str, nickname: str, *, household_id: str) -> None:
+    """Rename one configured household account.
+
+    Native contract (FUN_10037c5c0): SetAccountNicknameX takes AccountUDN and
+    AccountNickname, both wrapped in the household ``2:`` envelope (AES-128-CBC
+    under the household-derived key, the same envelope as
+    ThirdPartyMediaServersX).  Sending plaintext values is rejected with UPnP
+    error 402; the encoded form is accepted.  The format was cracked from a
+    wire capture of the Windows controller (which renamed SiriusXM locally)
+    and verified live: ``SetAccountNicknameX`` returns 200 and the inventory
+    reflects the new nickname.  The account identifier may arrive in either
+    form: the plaintext ``SA_RINCON...`` UDN from the account inventory, or the
+    ``2:`` blob returned by AddAccountX/AddOAuthAccountX -- the latter is
+    decoded back to plaintext first so it is never double-encoded.
+    """
+    if not account_udn:
+        raise OnboardingError("An account UDN is required to rename an account")
+    _require_household(host, household_id)
+    if account_udn.startswith("2:"):
+        account_udn = decrypt_blob(account_udn, household_id).decode("utf-8")
+    encoded_udn = encode_blob(account_udn.encode("utf-8"), household_id)
+    encoded_nickname = encode_blob(nickname.encode("utf-8"), household_id)
     try:
         local_soap(
             host,
             SYSTEM_PROPERTIES_PATH,
             SYSTEM_PROPERTIES,
             "SetAccountNicknameX",
-            {"AccountUDN": account_udn, "AccountNickname": nickname},
+            {"AccountUDN": encoded_udn, "AccountNickname": encoded_nickname},
         )
     except LocalSoapFault as exc:
-        if exc.upnp_code == 402:
+        if exc.upnp_code is not None:
             raise OnboardingError(
-                f"The player rejected SetAccountNicknameX (UPnP error 402: invalid arguments). "
-                "This firmware does not perform local nickname changes; the Sonos apps rename "
-                "accounts through their cloud instead. No account state was changed."
+                f"The player rejected SetAccountNicknameX for the account (UPnP error "
+                f"{exc.upnp_code}: {exc.upnp_description or 'invalid arguments'}). "
+                "No account state was changed."
             ) from exc
         raise
 
@@ -724,7 +748,7 @@ def main() -> None:
         result = commit_link(player.host, service, session)
 
     if args.nickname:
-        set_nickname(player.host, result.account_udn, args.nickname)
+        set_nickname(player.host, result.account_udn, args.nickname, household_id=player.household_id)
         result = AddedAccount(result.service_id, result.service_name, result.account_udn, args.nickname)
     print(json.dumps(asdict(result), indent=2))
 

@@ -121,7 +121,7 @@ class AccountGuiTests(unittest.TestCase):
         self.assertIn("keyless_record", payload)
         self.assertIn("empty-key RemoveAccount contract", payload["keyless_record"])
 
-    def test_keyless_account_enables_remove_but_disables_rename(self) -> None:
+    def test_keyless_account_enables_remove_and_rename(self) -> None:
         app = self._manage_app()
         anonymous = Service(511, "90s90s Radio", "https://example.invalid", "Anonymous", 0, {})
         keyless = Account(511, 39, "SA_RINCON130823_")
@@ -129,9 +129,10 @@ class AccountGuiTests(unittest.TestCase):
         app.manage_tree.selection.return_value = ["manage-511-39"]
         app._set_text = Mock()
         app._manage_account_selected()
-        # Keyless records resolve for removal with the empty-key contract (verified live).
+        # Keyless records resolve for removal with the empty-key contract, and
+        # rename works through the 2:-encoded envelope (both verified live).
         app.manage_remove_button.configure.assert_called_with(state="normal")
-        app.manage_rename_button.configure.assert_called_with(state="disabled")
+        app.manage_rename_button.configure.assert_called_with(state="normal")
 
     def test_manage_accounts_complete_flags_keyless_state_column(self) -> None:
         app = self._manage_app()
@@ -192,17 +193,24 @@ class AccountGuiTests(unittest.TestCase):
         # contract is applied inside onboarding.remove_account.
         self.assertEqual(remove.call_args.args[2], "SA_RINCON130823_")
 
-    def test_manage_rename_is_firmware_blocked(self) -> None:
+    def test_manage_rename_enabled_for_keyed_account(self) -> None:
         app = self._manage_app()
+        app.manage_accounts["manage-37-1"] = (app.manage_services[37], _account(37, 1, token="tok", key="key"))
         app.manage_tree.selection.return_value = ["manage-37-1"]
         app._manage_account_selected()
-        self.assertEqual(app.manage_rename_button.configure.call_args_list[-1], call(state="disabled"))
-        with patch("sonos_accounts_gui.messagebox.showinfo") as info, patch(
+        self.assertEqual(app.manage_rename_button.configure.call_args_list[-1], call(state="normal"))
+        with patch("sonos_accounts_gui.simpledialog.askstring", return_value="New Name"), patch(
+            "sonos_accounts_gui.onboarding.player_household", return_value="Sonos_hh"
+        ), patch("sonos_accounts_gui.messagebox.askyesno", return_value=True), patch(
             "sonos_accounts_gui.onboarding.set_nickname"
-        ) as rename:
+        ) as rename, patch.object(
+            SonosExplorerApp, "_run_task", side_effect=lambda label, work, success: success(work())
+        ), patch("sonos_accounts_gui.messagebox.showinfo"):
             app.manage_set_nickname()
-        rename.assert_not_called()
-        self.assertIn("UPnP error 402", info.call_args.args[1])
+        rename.assert_called_once()
+        self.assertEqual(rename.call_args.args[0], "192.0.2.1")
+        self.assertEqual(rename.call_args.args[2], "New Name")
+        self.assertEqual(rename.call_args.kwargs["household_id"], "Sonos_hh")
 
 
 if __name__ == "__main__":

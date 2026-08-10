@@ -993,10 +993,12 @@ class SonosExplorerApp:
             actions,
             text=(
                 "RemoveAccount uses the account UDN as the native AccountID. Edit operations use the "
-                "account key (Username0) — the player rejects the full UDN for them. Set nickname is "
-                "disabled: this firmware rejects SetAccountNicknameX (UPnP 402); the Sonos apps rename "
-                "via cloud. Keyless records (empty-key anonymous adds) are removed with the "
-                "empty-key RemoveAccount contract, verified live."
+                "account key (Username0) — the player rejects the full UDN for them. Set nickname "
+                "renames accounts via the local SetAccountNicknameX: AccountUDN and the "
+                "nickname are sent in the 2:-encoded household envelope (cracked from a wire capture, "
+                "verified live on keyed and keyless records alike). "
+                "Keyless records (empty-key anonymous adds) are removed with the empty-key "
+                "RemoveAccount contract, verified live."
             ),
             style="Muted.TLabel",
             wraplength=320,
@@ -1560,7 +1562,7 @@ class SonosExplorerApp:
                 assert session is not None
                 added = onboarding.commit_link(host, service, session)
             if nickname:
-                onboarding.set_nickname(host, added.account_udn, nickname)
+                onboarding.set_nickname(host, added.account_udn, nickname, household_id=actual_household)
                 return onboarding.AddedAccount(added.service_id, added.service_name, added.account_udn, nickname)
             return added
 
@@ -1650,10 +1652,10 @@ class SonosExplorerApp:
         # Remove works for every record: keyed accounts resolve by their UDN, and
         # keyless records resolve with the empty-key contract (verified live).
         self.manage_remove_button.configure(state="normal" if enabled else "disabled")
-        # Local SetAccountNicknameX is rejected by this firmware (UPnP 402 on
-        # every input, verified against the live player); the Sonos apps rename
-        # through their cloud, so the local rename affordance stays disabled.
-        self.manage_rename_button.configure(state="disabled")
+        # Local SetAccountNicknameX renames any record once AccountUDN and the
+        # nickname are wrapped in the household 2: envelope (cracked from a wire
+        # capture, verified live on keyed and keyless records alike).
+        self.manage_rename_button.configure(state="normal" if enabled else "disabled")
         self.manage_reauthorize_button.configure(state="normal" if enabled else "disabled")
         if pair is None:
             return
@@ -1672,15 +1674,11 @@ class SonosExplorerApp:
             "has_token": bool(account.token),
             "needs_reauth": account.token == "needs_reauth",
         }
-        details["rename_note"] = (
-            "Set nickname is disabled: this player's firmware rejects SetAccountNicknameX with UPnP "
-            "error 402 for every account; the Sonos apps rename accounts through their cloud."
-        )
         if keyless:
             details["keyless_record"] = (
                 "This record has no provider key or username (empty-key anonymous record). Remove "
-                "uses the empty-key RemoveAccount contract, which the player resolves for this "
-                "service's keyless record (verified live); Set nickname stays disabled."
+                "uses the empty-key RemoveAccount contract, and rename works through the "
+                "2:-encoded SetAccountNicknameX envelope (both verified live on keyless records)."
             )
         self._set_text(self.manage_details, json.dumps(details, indent=2, sort_keys=True))
 
@@ -1751,13 +1749,46 @@ class SonosExplorerApp:
         )
 
     def manage_set_nickname(self) -> None:
-        # Kept only so the disabled button's command binding does not dangle; the
-        # action itself is firmware-blocked and never invoked through the UI.
+        pair = self._selected_manage_account()
+        if not pair:
+            return
+        service, account = pair
+        new_nickname = simpledialog.askstring(
+            "Set account nickname",
+            f"New nickname for {service.name} (serial {account.serial}):",
+            initialvalue=account.nickname,
+            parent=self.root,
+        )
+        if new_nickname is None:
+            return
+        new_nickname = new_nickname.strip()
+        if not new_nickname:
+            messagebox.showinfo(
+                "Sonos Service Explorer",
+                "The nickname cannot be empty.",
+                parent=self.root,
+            )
+            return
+        household_id = self._manage_confirmation(
+            "SetAccountNicknameX",
+            service,
+            f"Account UDN: {account.udn}\n\nRenames this account to {new_nickname!r}.",
+        )
+        if not household_id:
+            return
+        host = self.host_var.get().strip()
+
+        def work() -> None:
+            onboarding.set_nickname(host, account.udn, new_nickname, household_id=household_id)
+
+        self._run_task(f"Renaming {service.name} account…", work, self._manage_rename_complete)
+
+    def _manage_rename_complete(self, _result: None) -> None:
+        self.summary_var.set("Account nickname updated. Reload Manage accounts to confirm.")
+        self._log("SetAccountNicknameX completed for the selected account")
         messagebox.showinfo(
             "Sonos Service Explorer",
-            "Set nickname is disabled: this player's firmware (90.0) rejects the local "
-            "SetAccountNicknameX action with UPnP error 402 for every account (verified against the "
-            "live player). The Sonos apps rename accounts through their cloud instead.",
+            "The account nickname was updated on the household players.",
             parent=self.root,
         )
 

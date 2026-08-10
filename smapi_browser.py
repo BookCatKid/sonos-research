@@ -28,6 +28,7 @@ from decode_third_party_media_servers import (
     ZGT_EVENT_PATH,
     decrypt_blob,
     discover,
+    encode_blob,
     local_ip_for,
     subscribe,
     unsubscribe,

@@ -210,11 +210,36 @@ class AccountOnboardingTests(unittest.TestCase):
         self.assertEqual(fields["AccountID"], "X_#Svc9479-1-Token")
         self.assertEqual(fields["NewAccountMd"], "provider-md")
 
-    def test_set_nickname_translates_firmware_rejection(self) -> None:
+    @patch("sonos_account_onboarding.local_soap", side_effect=[HOUSEHOLD, SUCCESS])
+    def test_set_nickname_encodes_values_in_household_envelope(self, soap) -> None:
+        from decode_third_party_media_servers import decrypt_blob
+
+        set_nickname("192.0.2.1", "SA_RINCON9479_X_#Svc9479-1-Token", "New name", household_id="Sonos_hh")
+        self.assertEqual(soap.call_args_list[1].args[3], "SetAccountNicknameX")
+        fields = soap.call_args_list[1].args[4]
+        # Plaintext values are rejected (UPnP 402); the player wants both the
+        # UDN and the nickname wrapped in the household 2: envelope.
+        self.assertTrue(fields["AccountUDN"].startswith("2:"))
+        self.assertTrue(fields["AccountNickname"].startswith("2:"))
+        self.assertEqual(decrypt_blob(fields["AccountUDN"], "Sonos_hh"), b"SA_RINCON9479_X_#Svc9479-1-Token")
+        self.assertEqual(decrypt_blob(fields["AccountNickname"], "Sonos_hh"), b"New name")
+
+    @patch("sonos_account_onboarding.local_soap", side_effect=[HOUSEHOLD, SUCCESS])
+    def test_set_nickname_normalizes_blob_udn_before_encoding(self, soap) -> None:
+        from decode_third_party_media_servers import decrypt_blob, encode_blob
+
+        blob = encode_blob(b"SA_RINCON9479_X_#Svc9479-1-Token", "Sonos_hh")
+        set_nickname("192.0.2.1", blob, "New name", household_id="Sonos_hh")
+        fields = soap.call_args_list[1].args[4]
+        # The 2: blob from AddAccountX must be decoded first so it is not
+        # double-encoded; the sent AccountUDN decrypts to the plaintext UDN.
+        self.assertEqual(decrypt_blob(fields["AccountUDN"], "Sonos_hh"), b"SA_RINCON9479_X_#Svc9479-1-Token")
+
+    def test_set_nickname_translates_player_rejection(self) -> None:
         fault = LocalSoapFault("SetAccountNicknameX", 500, "s:Client", "UPnPError", upnp_code=402)
-        with patch("sonos_account_onboarding.local_soap", side_effect=fault):
-            with self.assertRaisesRegex(Exception, "UPnP error 402.*cloud"):
-                set_nickname("192.0.2.1", "SA_RINCON9479_X_#Svc9479-1-Token", "New name")
+        with patch("sonos_account_onboarding.local_soap", side_effect=[HOUSEHOLD, fault]):
+            with self.assertRaisesRegex(Exception, "UPnP error 402.*No account state was changed"):
+                set_nickname("192.0.2.1", "SA_RINCON9479_X_#Svc9479-1-Token", "New name", household_id="Sonos_hh")
 
     @patch("sonos_account_onboarding.local_soap", side_effect=[HOUSEHOLD, SUCCESS])
     def test_refresh_credentials_uses_native_contract(self, soap) -> None:
