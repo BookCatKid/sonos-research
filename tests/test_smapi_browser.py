@@ -189,6 +189,47 @@ class ContentTransportTests(unittest.TestCase):
         self.assertEqual(first["items"][0]["source_transport"], "content")
         self.assertEqual(instance.household_id, "Sonos_household")
 
+    def test_plain_smapi_root_scopes_household_for_token_account(self) -> None:
+        # Pandora-style services reject SMAPI roots sent under the bare
+        # household ID (Client.AuthTokenExpired). The desktop and SoCo scope
+        # every SMAPI request to the account's OAuth device identity.
+        instance = client("AppLink")
+        session = DesktopBrowseSession(instance)
+        seen: list[str] = []
+
+        def metadata(request_client: SmapiClient, object_id: str, index: int, count: int):
+            del object_id, index, count
+            seen.append(request_client.household_id)
+            return {"index": 0, "count": 0, "total": 0, "items": []}
+
+        with patch.object(SmapiClient, "get_metadata", metadata):
+            session.browse("root")
+
+        self.assertEqual(seen, ["Sonos_household_00000009"])
+        self.assertEqual(instance.household_id, "Sonos_household")
+
+    def test_plain_smapi_root_keeps_bare_household_for_keyless_account(self) -> None:
+        instance = client("Anonymous")
+        instance.account = account(
+            udn="SA_RINCON10759_",
+            username="",
+            password="",
+            token="",
+            key="",
+        )
+        session = DesktopBrowseSession(instance)
+        seen: list[str] = []
+
+        def metadata(request_client: SmapiClient, object_id: str, index: int, count: int):
+            del object_id, index, count
+            seen.append(request_client.household_id)
+            return {"index": 0, "count": 0, "total": 0, "items": []}
+
+        with patch.object(SmapiClient, "get_metadata", metadata):
+            session.browse("root")
+
+        self.assertEqual(seen, ["Sonos_household"])
+
     def test_content_views_are_flattened_with_section_and_transport(self) -> None:
         rows = content_page_items(
             {

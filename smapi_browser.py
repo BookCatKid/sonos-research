@@ -1239,6 +1239,45 @@ class DesktopBrowseSession:
     def root_transport(self) -> str:
         return "content" if self.content_endpoint else "smapi"
 
+    def _scoped_client(self, *, force_scoped: bool = False) -> SmapiClient:
+        """Return the SMAPI client for the account's OAuth device identity.
+
+        SMAPI requests identify the account through ``loginToken.householdId``.
+        The desktop controller sends the account-scoped content device identity
+        here, not the bare household ID: providers such as Apple and Pandora
+        reject SMAPI calls made under the plain household identity even though
+        their content home page accepts it.  Content-session objects are always
+        handed back to SMAPI scoped; plain roots are scoped too whenever the
+        account carries a token UDN.  Anonymous services carry no account UID,
+        so they keep the shared client.
+        """
+        if not force_scoped and self.client.account.keyless:
+            return self.client
+        try:
+            scoped_household_id = account_content_device_id(
+                self.client.household_id,
+                self.client.account,
+            )
+        except RuntimeError:
+            # Not a token account (eg an anonymous service): no account UID is
+            # encoded in the UDN, so there is nothing to scope to.
+            return self.client
+        request_client = SmapiClient(
+            self.client.service,
+            self.client.account,
+            scoped_household_id,
+            self.client.device_id,
+            self.client.zone_player_id,
+            self.client.player_host,
+            host_device_id=self.client.host_device_id,
+            controller_id=self.client.controller_id,
+            time_zone=self.client.time_zone,
+            explicit_content=self.client.explicit_content,
+            allow_credential_refresh=self.client.allow_credential_refresh,
+        )
+        request_client.session_id = self.client.session_id
+        return request_client
+
     def browse(
         self,
         object_id: str = "root",
@@ -1288,30 +1327,7 @@ class DesktopBrowseSession:
             if from_content_page
             else object_id
         )
-        request_client = self.client
-        if from_content_page:
-            # Content-session objects are handed to SMAPI with the account's
-            # OAuth device identity as loginToken.householdId.  Returning to
-            # the bare household ID makes Apple accept /browse/v1 but reject
-            # every Library child as InvalidTokenException.
-            scoped_household_id = account_content_device_id(
-                self.client.household_id,
-                self.client.account,
-            )
-            request_client = SmapiClient(
-                self.client.service,
-                self.client.account,
-                scoped_household_id,
-                self.client.device_id,
-                self.client.zone_player_id,
-                self.client.player_host,
-                host_device_id=self.client.host_device_id,
-                controller_id=self.client.controller_id,
-                time_zone=self.client.time_zone,
-                explicit_content=self.client.explicit_content,
-                allow_credential_refresh=self.client.allow_credential_refresh,
-            )
-            request_client.session_id = self.client.session_id
+        request_client = self._scoped_client(force_scoped=from_content_page)
         try:
             page = request_client.get_metadata(smapi_id, index, count)
         finally:
@@ -1866,10 +1882,10 @@ def main() -> None:
             )
         )
         return
-    if args.id in {"", "root"} and not args.recursive:
-        result = DesktopBrowseSession(client).browse(args.id, args.index, args.count)
-    else:
+    if args.recursive:
         result = client.get_metadata(args.id, args.index, args.count, args.recursive)
+    else:
+        result = DesktopBrowseSession(client).browse(args.id, args.index, args.count)
     output = {
         "account": account_label(service, account),
         "container_id": args.id,
